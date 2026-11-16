@@ -6,12 +6,16 @@ import { Banner } from '../components/Banner'
 import { OfferPicker } from '../components/OfferPicker'
 import { errorMessage, formatDate } from '../lib/format'
 
+// Values must match Keitaro's report/build interval names exactly.
 const INTERVALS = [
   { value: 'today', label: 'Today' },
   { value: 'yesterday', label: 'Yesterday' },
-  { value: 'last_7_days', label: 'Last 7 days' },
-  { value: 'last_30_days', label: 'Last 30 days' },
+  { value: 'this_week', label: 'This week' },
+  { value: '7_days_ago', label: 'Last 7 days' },
+  { value: '30_days_ago', label: 'Last 30 days' },
   { value: 'this_month', label: 'This month' },
+  { value: 'last_month', label: 'Last month' },
+  { value: 'all_time', label: 'All time' },
 ]
 
 export function StreamEditorPage() {

@@ -5,7 +5,7 @@ from __future__ import annotations
 import respx
 from httpx import Response
 
-from app.services.stats import normalise_interval
+from app.services.stats import ALLOWED_INTERVALS, normalise_interval
 from tests import fixtures as fx
 from tests.conftest import KT
 
@@ -87,7 +87,23 @@ async def test_every_keitaro_call_is_audited(api):
 def test_unknown_intervals_fall_back_to_today():
     assert normalise_interval("this_week_or_so") == "today"
     assert normalise_interval(None) == "today"
-    assert normalise_interval("last_7_days") == "last_7_days"
+    assert normalise_interval("7_days_ago") == "7_days_ago"
+
+
+def test_keitaros_rejected_interval_spellings_are_not_allowed():
+    """Keitaro names these "<n>_days_ago"; "last_7_days" makes it fail to parse a date."""
+    for rejected in ("last_7_days", "last_30_days", "current_month"):
+        assert rejected not in ALLOWED_INTERVALS
+        assert normalise_interval(rejected) == "today"
+
+
+def test_the_ui_interval_options_are_all_accepted_by_keitaro():
+    """Keep the frontend dropdown and the server-side allowlist in sync."""
+    ui_options = {
+        "today", "yesterday", "this_week", "7_days_ago",
+        "30_days_ago", "this_month", "last_month", "all_time",
+    }
+    assert ui_options <= ALLOWED_INTERVALS
 
 
 @respx.mock

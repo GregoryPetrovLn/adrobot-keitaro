@@ -20,16 +20,21 @@ METRICS = [
     "revenue",
 ]
 
-# Intervals accepted by Keitaro's report/build `range.interval`.
+# Intervals accepted by Keitaro's report/build `range.interval`, verified against the
+# tracker. Note the naming: it is "7_days_ago", not "last_7_days" — Keitaro rejects the
+# latter with a confusing "The timezone could not be found in the database" error, because
+# it falls through to parsing the value as a free-form date string.
 ALLOWED_INTERVALS = {
     "today",
     "yesterday",
-    "last_7_days",
+    "this_week",
+    "last_week",
     "7_days_ago",
-    "last_30_days",
+    "14_days_ago",
     "30_days_ago",
     "this_month",
     "last_month",
+    "all_time",
 }
 
 DEFAULT_INTERVAL = "today"
