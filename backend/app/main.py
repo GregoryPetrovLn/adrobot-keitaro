@@ -103,7 +103,9 @@ def _mount_frontend(app: FastAPI) -> None:
 
     index = STATIC_DIR / "index.html"
 
-    @app.get("/{full_path:path}", include_in_schema=False)
+    # response_model=None: the return type is a union of Response subclasses,
+    # which FastAPI would otherwise try to turn into a Pydantic field.
+    @app.get("/{full_path:path}", include_in_schema=False, response_model=None)
     async def spa(full_path: str) -> FileResponse | JSONResponse:
         candidate = (STATIC_DIR / full_path).resolve()
         if (

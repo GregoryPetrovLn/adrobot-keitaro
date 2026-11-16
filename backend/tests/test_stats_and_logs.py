@@ -88,3 +88,16 @@ def test_unknown_intervals_fall_back_to_today():
     assert normalise_interval("this_week_or_so") == "today"
     assert normalise_interval(None) == "today"
     assert normalise_interval("last_7_days") == "last_7_days"
+
+
+@respx.mock
+async def test_timestamps_are_always_serialised_as_utc(api):
+    """Values that round-trip through SQLite come back naive; the API must still say UTC."""
+    _routes(respx.mock, [Response(200, json=fx.EMPTY_REPORT)] * 4)
+    created = (await api.post("/api/campaigns/import", json={"keitaro_id": 211939})).json()
+    assert created["created_at"].endswith("Z")
+
+    reread = (await api.get("/api/campaigns")).json()[0]
+    assert reread["created_at"].endswith("Z")
+    assert reread["created_at"] == created["created_at"]
+    assert reread["streams_fetched_at"].endswith("Z")

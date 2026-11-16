@@ -2,11 +2,29 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, field_validator
 
 from app.services import geo
+
+
+def _as_utc_iso(value: datetime | None) -> str | None:
+    """Serialise timestamps as unambiguous UTC.
+
+    SQLite drops the offset even on DateTime(timezone=True) columns, so a value that
+    went in tz-aware comes back naive. Without this the same instant would be rendered as
+    UTC on the response that created it and as browser-local time once re-read, and the UI
+    would show two different times for one event.
+    """
+    if value is None:
+        return None
+    moment = value if value.tzinfo else value.replace(tzinfo=UTC)
+    return moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+UtcDatetime = Annotated[datetime, PlainSerializer(_as_utc_iso, return_type=str, when_used="json")]
 
 
 class ORMModel(BaseModel):
@@ -63,7 +81,7 @@ class OfferOut(ORMModel):
 
 class OfferSyncResult(BaseModel):
     synced: int
-    synced_at: datetime
+    synced_at: UtcDatetime
 
 
 # ---------------------------------------------------------------- campaigns
@@ -110,8 +128,8 @@ class CampaignOut(ORMModel):
     domain_name: str | None = None
     campaign_url: str | None = None
     created_by_app: bool
-    streams_fetched_at: datetime | None = None
-    created_at: datetime
+    streams_fetched_at: UtcDatetime | None = None
+    created_at: UtcDatetime
 
 
 class KeitaroCampaignRef(BaseModel):
@@ -196,7 +214,7 @@ class SyncLogOut(ORMModel):
     ok: bool
     duration_ms: int
     error: str | None
-    created_at: datetime
+    created_at: UtcDatetime
     request_body: dict | list | None = None
     response_body: dict | list | str | None = None
 
