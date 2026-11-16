@@ -309,3 +309,26 @@ async def test_bring_back_leaves_no_pin_behind(api):
     # And the next add rebalances everything evenly, as it would have before.
     body = (await api.post(base, json={"offer_id": 11111})).json()
     assert _shares(body) == {3749: 34, 3717: 33, 11111: 33}
+
+
+@respx.mock
+async def test_audit_rows_do_not_fight_the_request_for_the_write_lock(api):
+    """Audit rows are written after the request's transaction, not on a second connection.
+
+    Writing them on a parallel connection deadlocks against the request's own open
+    transaction on SQLite ("database is locked"), which silently lost the log again.
+    """
+    _routes(respx.mock)
+    campaign_id, stream_id = await _setup(api)
+
+    # A request that writes a lot and then fails: both halves must still be recorded.
+    await api.post(
+        f"/api/campaigns/{campaign_id}/streams/{stream_id}/offers", json={"offer_id": 3717}
+    )
+    respx.put(f"{KT}/streams/1310640").mock(return_value=Response(500, text="boom"))
+    assert (await api.post(f"/api/campaigns/{campaign_id}/push")).status_code == 502
+
+    logs = (await api.get(f"/api/campaigns/{campaign_id}/logs")).json()
+    assert logs, "no audit rows were written at all"
+    assert all(log["id"] and log["created_at"] for log in logs), "defaults must be applied"
+    assert any(not log["ok"] for log in logs), "the failed call must be there"
