@@ -290,16 +290,27 @@ backend/
     keitaro/client.py      async Keitaro admin API client
     services/
       campaigns.py         part 1: create / import
-      streams.py           part 2: staging, rebalancing, push
-      shares.py            share arithmetic (largest remainder)
-      stats.py             report/build → per-stream and per-offer numbers
-      offers.py            offer catalogue cache
+      streams.py           part 2: staging, rebalancing, push, staleness checks
+      shares.py            share arithmetic
+      stats.py             report/build -> per-stream and per-offer numbers, cached briefly
+      offers.py            offer catalogue cache and search
       logs.py              audit trail
+      geo.py               ISO-3166 country list
+      ids.py               id parsing helpers
     routers/               HTTP layer
+    audit.py               per-request buffer of audit rows
+    locks.py               per-campaign serialisation of staged edits
+    db.py                  async engine, session, audit flush
     models.py              SQLAlchemy models
     schemas.py             request/response models
   alembic/                 migrations
   tests/                   pytest suite (Keitaro mocked with respx)
+    test_shares.py           share arithmetic
+    test_campaign_create.py  part 1 payloads, validation, rollback
+    test_stream_editor.py    part 2 staging lifecycle
+    test_resilience.py       staleness, concurrency, bad responses, auditing
+    test_offer_search.py     autocomplete search
+    test_stats_and_logs.py   stats mapping, intervals, caching, audit
 frontend/
   src/
     pages/CampaignsPage.tsx      creator + import + list
