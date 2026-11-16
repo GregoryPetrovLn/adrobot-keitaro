@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import type { Offer } from '../api/types'
+import { errorMessage } from '../lib/format'
 
 interface Props {
   value: Offer | null
@@ -16,6 +17,7 @@ export function OfferPicker({ value, onChange, placeholder, disabled, testId }: 
   const [options, setOptions] = useState<Offer[]>([])
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [highlight, setHighlight] = useState(0)
   const boxRef = useRef<HTMLDivElement>(null)
 
@@ -23,16 +25,25 @@ export function OfferPicker({ value, onChange, placeholder, disabled, testId }: 
     if (!open) return
     let cancelled = false
     setLoading(true)
-    const timer = window.setTimeout(async () => {
-      try {
-        const found = await api.searchOffers(query)
-        if (!cancelled) {
+    const timer = window.setTimeout(() => {
+      api
+        .searchOffers(query)
+        .then((found) => {
+          if (cancelled) return
           setOptions(found)
+          setError(null)
           setHighlight(0)
-        }
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
+        })
+        // The search hits Keitaro through the cache, so a bad key or a flaky tracker
+        // lands here. Saying so beats an indistinguishable "No offers found".
+        .catch((caught: unknown) => {
+          if (cancelled) return
+          setOptions([])
+          setError(errorMessage(caught))
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false)
+        })
     }, 200)
     return () => {
       cancelled = true
@@ -74,24 +85,54 @@ export function OfferPicker({ value, onChange, placeholder, disabled, testId }: 
 
   return (
     <div className="autocomplete" ref={boxRef}>
-      <input
-        data-testid={testId}
-        value={display}
-        placeholder={placeholder ?? 'Search offers by name or id…'}
-        disabled={disabled}
-        onFocus={() => setOpen(true)}
-        onKeyDown={onKeyDown}
-        onChange={(event) => {
-          if (value) onChange(null)
-          setQuery(event.target.value)
-          setOpen(true)
-        }}
-      />
+      <div className="picker-input">
+        <input
+          data-testid={testId}
+          value={display}
+          placeholder={placeholder ?? 'Search offers by name or id…'}
+          disabled={disabled}
+          onFocus={() => setOpen(true)}
+          onKeyDown={onKeyDown}
+          onChange={(event) => {
+            // While an offer is selected the input shows "[id] name". Typing must start a
+            // fresh search from the new character, not append to that display string.
+            if (value) {
+              onChange(null)
+              setQuery(event.nativeEvent instanceof InputEvent ? event.nativeEvent.data ?? '' : '')
+            } else {
+              setQuery(event.target.value)
+            }
+            setOpen(true)
+          }}
+        />
+        {value && (
+          <button
+            type="button"
+            className="picker-clear"
+            aria-label="Clear the selected offer"
+            data-testid={testId ? `${testId}-clear` : undefined}
+            disabled={disabled}
+            onClick={() => {
+              onChange(null)
+              setQuery('')
+              setOpen(true)
+            }}
+          >
+            ×
+          </button>
+        )}
+      </div>
       {open && (
         <div className="options" role="listbox">
-          {loading && <div className="empty"><span className="spinner" /> Searching…</div>}
-          {!loading && options.length === 0 && <div className="empty">No offers found</div>}
+          {loading && (
+            <div className="empty">
+              <span className="spinner" /> Searching…
+            </div>
+          )}
+          {!loading && error && <div className="empty picker-error">{error}</div>}
+          {!loading && !error && options.length === 0 && <div className="empty">No offers found</div>}
           {!loading &&
+            !error &&
             options.map((offer, index) => (
               <div
                 key={offer.id}
@@ -104,7 +145,9 @@ export function OfferPicker({ value, onChange, placeholder, disabled, testId }: 
                   choose(offer)
                 }}
               >
-                <div className="title">[{offer.id}] {offer.name}</div>
+                <div className="title">
+                  [{offer.id}] {offer.name}
+                </div>
                 <div className="sub">
                   {offer.group_name ?? 'no group'}
                   {offer.countries?.length ? ` · ${offer.countries.join(', ')}` : ''}

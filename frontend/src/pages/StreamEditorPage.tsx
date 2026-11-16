@@ -21,15 +21,17 @@ const INTERVALS = [
 export function StreamEditorPage() {
   const { campaignId = '' } = useParams()
   const [data, setData] = useState<CampaignStreams | null>(null)
-  const [interval, setInterval] = useState('today')
+  const [statsInterval, setStatsInterval] = useState('today')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
+  /** Run one call that returns the whole campaign view, with a shared in-flight flag. */
   const run = useCallback(
     async (action: () => Promise<CampaignStreams>, successMessage?: string) => {
       setBusy(true)
       setError(null)
+      setNotice(null)
       try {
         setData(await action())
         if (successMessage) setNotice(successMessage)
@@ -43,8 +45,8 @@ export function StreamEditorPage() {
   )
 
   useEffect(() => {
-    void run(() => api.streams(campaignId, interval))
-  }, [campaignId, interval, run])
+    void run(() => api.streams(campaignId, statsInterval))
+  }, [campaignId, statsInterval, run])
 
   async function push() {
     setBusy(true)
@@ -52,14 +54,20 @@ export function StreamEditorPage() {
     setNotice(null)
     try {
       const result = await api.push(campaignId)
+      setData(await api.streams(campaignId, statsInterval))
       setNotice(
         result.pushed_streams === 0
           ? 'Nothing to push — Keitaro is already up to date.'
           : `Pushed ${result.pushed_streams} stream(s) to Keitaro: ${result.applied.join('; ')}`,
       )
-      setData(await api.streams(campaignId, interval))
     } catch (caught) {
       setError(errorMessage(caught))
+      // A refused push leaves the staged changes intact; re-read so the table matches.
+      try {
+        setData(await api.streams(campaignId, statsInterval))
+      } catch {
+        /* keep the push error, which is the useful one */
+      }
     } finally {
       setBusy(false)
     }
@@ -93,7 +101,10 @@ export function StreamEditorPage() {
               ) {
                 return
               }
-              void run(() => api.fetchStreams(campaignId, interval), 'Reloaded from Keitaro.')
+              void run(
+                () => api.fetchStreams(campaignId, statsInterval),
+                'Reloaded from Keitaro.',
+              )
             }}
           >
             ⟳ Fetch streams from KT
@@ -109,8 +120,9 @@ export function StreamEditorPage() {
             id="interval"
             data-testid="interval"
             style={{ width: 150 }}
-            value={interval}
-            onChange={(event) => setInterval(event.target.value)}
+            value={statsInterval}
+            disabled={busy}
+            onChange={(event) => setStatsInterval(event.target.value)}
           >
             {INTERVALS.map((option) => (
               <option key={option.value} value={option.value}>
@@ -118,7 +130,7 @@ export function StreamEditorPage() {
               </option>
             ))}
           </select>
-          {busy && <span className="spinner" />}
+          {busy && <span className="spinner" data-testid="busy" />}
         </div>
 
         <div className="kv">
@@ -157,7 +169,9 @@ export function StreamEditorPage() {
           <button
             data-testid="cancel-changes"
             disabled={busy}
-            onClick={() => void run(() => api.reset(campaignId), 'Pending changes discarded.')}
+            onClick={() =>
+              void run(() => api.reset(campaignId, statsInterval), 'Pending changes discarded.')
+            }
           >
             ✕ Cancel
           </button>
@@ -169,7 +183,9 @@ export function StreamEditorPage() {
           <thead>
             <tr>
               <th style={{ width: '38%' }}>Offer</th>
-              <th className="num" style={{ width: 130 }}>Share</th>
+              <th className="num" style={{ width: 130 }}>
+                Share
+              </th>
               <th className="num">Clicks</th>
               <th className="num">Unique</th>
               <th className="num">Bots</th>
@@ -185,8 +201,8 @@ export function StreamEditorPage() {
                 stream={stream}
                 busy={busy}
                 campaignId={campaignId}
-                onResult={setData}
-                onError={setError}
+                statsInterval={statsInterval}
+                onRun={run}
               />
             ))}
           </tbody>
@@ -196,33 +212,23 @@ export function StreamEditorPage() {
   )
 }
 
+type RunFn = (action: () => Promise<CampaignStreams>, successMessage?: string) => Promise<void>
+
 interface StreamRowsProps {
   stream: Stream
   busy: boolean
   campaignId: string
-  onResult: (data: CampaignStreams) => void
-  onError: (message: string | null) => void
+  statsInterval: string
+  onRun: RunFn
 }
 
-function StreamRows({ stream, busy, campaignId, onResult, onError }: StreamRowsProps) {
+function StreamRows({ stream, busy, campaignId, statsInterval, onRun }: StreamRowsProps) {
   const [offerToAdd, setOfferToAdd] = useState<Offer | null>(null)
-  const [adding, setAdding] = useState(false)
-
-  async function call(action: () => Promise<CampaignStreams>) {
-    onError(null)
-    try {
-      onResult(await action())
-    } catch (caught) {
-      onError(errorMessage(caught))
-    }
-  }
 
   async function add() {
     if (!offerToAdd) return
-    setAdding(true)
-    await call(() => api.addOffer(campaignId, stream.id, offerToAdd.id))
+    await onRun(() => api.addOffer(campaignId, stream.id, offerToAdd.id, statsInterval))
     setOfferToAdd(null)
-    setAdding(false)
   }
 
   return (
@@ -235,6 +241,11 @@ function StreamRows({ stream, busy, campaignId, onResult, onError }: StreamRowsP
             {stream.stats.clicks} click(s)
             {stream.action_payload ? ` · → ${stream.action_payload}` : ''}
           </span>
+          {stream.accepts_offers && stream.share_total !== 100 && stream.offers.length > 0 && (
+            <span className="badge removed" data-testid={`share-total-${stream.keitaro_id}`}>
+              shares total {stream.share_total}% — must be 100% to push
+            </span>
+          )}
         </td>
       </tr>
 
@@ -244,8 +255,9 @@ function StreamRows({ stream, busy, campaignId, onResult, onError }: StreamRowsP
           offer={offer}
           streamId={stream.id}
           campaignId={campaignId}
+          statsInterval={statsInterval}
           busy={busy}
-          onCall={call}
+          onRun={onRun}
         />
       ))}
 
@@ -255,7 +267,7 @@ function StreamRows({ stream, busy, campaignId, onResult, onError }: StreamRowsP
             <OfferPicker
               value={offerToAdd}
               onChange={setOfferToAdd}
-              disabled={busy || adding}
+              disabled={busy}
               testId={`add-offer-${stream.keitaro_id}`}
               placeholder="Add an offer to this stream…"
             />
@@ -264,7 +276,7 @@ function StreamRows({ stream, busy, campaignId, onResult, onError }: StreamRowsP
             <button
               className="primary sm"
               data-testid={`add-btn-${stream.keitaro_id}`}
-              disabled={!offerToAdd || busy || adding}
+              disabled={!offerToAdd || busy}
               onClick={add}
             >
               + Add
@@ -288,11 +300,12 @@ interface OfferRowProps {
   offer: StreamOffer
   streamId: string
   campaignId: string
+  statsInterval: string
   busy: boolean
-  onCall: (action: () => Promise<CampaignStreams>) => Promise<void>
+  onRun: RunFn
 }
 
-function OfferRow({ offer, streamId, campaignId, busy, onCall }: OfferRowProps) {
+function OfferRow({ offer, streamId, campaignId, statsInterval, busy, onRun }: OfferRowProps) {
   const [draftShare, setDraftShare] = useState(String(offer.share))
 
   useEffect(() => {
@@ -305,7 +318,9 @@ function OfferRow({ offer, streamId, campaignId, busy, onCall }: OfferRowProps) 
       setDraftShare(String(offer.share))
       return
     }
-    void onCall(() => api.patchOffer(campaignId, streamId, offer.offer_id, { share: parsed }))
+    void onRun(() =>
+      api.patchOffer(campaignId, streamId, offer.offer_id, { share: parsed }, statsInterval),
+    )
   }
 
   const rowClass = [offer.status !== 'synced' ? 'dirty' : '', offer.removed ? 'removed' : '']
@@ -346,8 +361,14 @@ function OfferRow({ offer, streamId, campaignId, busy, onCall }: OfferRowProps) 
             title={offer.pinned ? 'Unpin: let this share rebalance' : 'Pin: hold this share'}
             disabled={busy || offer.removed}
             onClick={() =>
-              void onCall(() =>
-                api.patchOffer(campaignId, streamId, offer.offer_id, { pinned: !offer.pinned }),
+              void onRun(() =>
+                api.patchOffer(
+                  campaignId,
+                  streamId,
+                  offer.offer_id,
+                  { pinned: !offer.pinned },
+                  statsInterval,
+                ),
               )
             }
           >
@@ -367,7 +388,9 @@ function OfferRow({ offer, streamId, campaignId, busy, onCall }: OfferRowProps) 
             data-testid={`restore-${offer.offer_id}`}
             disabled={busy}
             onClick={() =>
-              void onCall(() => api.restoreOffer(campaignId, streamId, offer.offer_id))
+              void onRun(() =>
+                api.restoreOffer(campaignId, streamId, offer.offer_id, statsInterval),
+              )
             }
           >
             ↺ Bring back
@@ -377,7 +400,11 @@ function OfferRow({ offer, streamId, campaignId, busy, onCall }: OfferRowProps) 
             className="sm danger"
             data-testid={`remove-${offer.offer_id}`}
             disabled={busy}
-            onClick={() => void onCall(() => api.removeOffer(campaignId, streamId, offer.offer_id))}
+            onClick={() =>
+              void onRun(() =>
+                api.removeOffer(campaignId, streamId, offer.offer_id, statsInterval),
+              )
+            }
           >
             🗑 Remove
           </button>

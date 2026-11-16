@@ -19,6 +19,7 @@ from app.errors import ConflictError, NotFoundError, ValidationError
 from app.keitaro.client import KeitaroClient
 from app.models import Campaign, Stream, StreamOffer, utcnow
 from app.services import offers as offers_service
+from app.services.ids import as_int
 from app.services.shares import ShareSlot, rebalance, validate_total
 
 logger = logging.getLogger(__name__)
@@ -99,7 +100,7 @@ def _replace_offers(stream: Stream, raw_offers: list[dict], names: dict[int, str
             stream.offers.append(row)
 
         row.offer_name = names.get(offer_id) or row.offer_name
-        row.keitaro_link_id = _as_int_or_none(raw.get("id"))
+        row.keitaro_link_id = as_int(raw.get("id"))
         row.kt_share = share
         row.share = share
         # A fetch is a hard reset: staged pins and removals do not survive it.
@@ -116,7 +117,8 @@ def _replace_offers(stream: Stream, raw_offers: list[dict], names: dict[int, str
 
 
 def active_offers(stream: Stream) -> list[StreamOffer]:
-    return [o for o in sorted(stream.offers, key=lambda o: o.position) if not o.removed]
+    # `Stream.offers` is already ordered by position by the relationship.
+    return [o for o in stream.offers if not o.removed]
 
 
 def apply_rebalance(stream: Stream) -> None:
@@ -184,8 +186,18 @@ async def remove_offer(session: AsyncSession, stream: Stream, offer_id: int) -> 
 
 
 async def restore_offer(session: AsyncSession, stream: Stream, offer_id: int) -> StreamOffer:
+    """Bring a staged-for-removal offer back, undoing the removal rather than re-splitting.
+
+    Removing an offer hands its traffic to the others, so a naive restore would leave a
+    70/30 stream at 50/50 — a round trip that changes the numbers is not an undo. Restoring
+    the offer's Keitaro share and holding it (pinned) lets the others fall back to exactly
+    what they were, which is what the user expects from "bring back".
+    """
     offer = _find_offer(stream, offer_id)
     offer.removed = False
+    if offer.kt_share is not None:
+        offer.share = offer.kt_share
+        offer.pinned = True
     apply_rebalance(stream)
     await session.flush()
     return offer
@@ -248,7 +260,9 @@ async def push_campaign(
     """Apply staged changes with one `PUT /streams/{id}` per modified stream.
 
     The offers array Keitaro accepts is declarative, so a single call per stream covers
-    additions, removals and re-weighting at once.
+    additions, removals and re-weighting at once. That also means a push computed from a
+    stale snapshot would *delete* anything added in Keitaro since the last fetch, so each
+    stream is re-read first and a push is refused if the tracker has moved underneath us.
     """
     changed = dirty_streams(campaign)
     if not changed:
@@ -259,18 +273,62 @@ async def push_campaign(
         slots = [ShareSlot(key=str(o.offer_id), share=o.share, pinned=o.pinned) for o in active]
         validate_total(slots)
 
+    remote_streams = {int(s["id"]): s for s in await client.list_streams(campaign.keitaro_id)}
+    for stream in changed:
+        _assert_not_stale(stream, remote_streams.get(stream.keitaro_id))
+
     applied: list[str] = []
     for stream in changed:
         active = active_offers(stream)
         payload = [{"offer_id": o.offer_id, "share": o.share} for o in active]
+        description = _describe_change(stream)
         response = await client.set_stream_offers(stream.keitaro_id, payload)
-        applied.append(_describe_change(stream))
-        _absorb_response(stream, response)
+        applied.append(description)
+        if not _absorb_response(stream, response):
+            # The write went through but we cannot trust the echo; re-read instead of
+            # guessing, so the local baseline still matches the tracker.
+            logger.warning(
+                "stream %s did not echo its offers on update; re-reading", stream.keitaro_id
+            )
+            fresh = await client.get_stream(stream.keitaro_id)
+            _absorb_response(stream, fresh)
 
     campaign.streams_fetched_at = utcnow()
     await session.flush()
     logger.info("pushed %s streams for campaign %s", len(changed), campaign.keitaro_id)
     return applied
+
+
+def _assert_not_stale(stream: Stream, remote: dict | None) -> None:
+    """Refuse to push over offers that changed in Keitaro since our last fetch."""
+    if remote is None:
+        raise ConflictError(
+            f"Stream '{stream.name}' no longer exists in Keitaro. "
+            "Fetch the campaign again before pushing."
+        )
+
+    remote_shares = {
+        int(o["offer_id"]): int(o.get("share") or 0) for o in (remote.get("offers") or [])
+    }
+    local_baseline = {
+        o.offer_id: o.kt_share for o in stream.offers if o.kt_share is not None
+    }
+    if remote_shares != local_baseline:
+        added = sorted(set(remote_shares) - set(local_baseline))
+        dropped = sorted(set(local_baseline) - set(remote_shares))
+        detail = []
+        if added:
+            detail.append(f"offers {added} were added there")
+        if dropped:
+            detail.append(f"offers {dropped} were removed there")
+        if not detail:
+            detail.append("their shares were changed there")
+        raise ConflictError(
+            f"Stream '{stream.name}' changed in Keitaro since you last fetched it — "
+            f"{', '.join(detail)}. Pushing now would overwrite that. "
+            "Use 'Fetch streams from KT' and redo your changes.",
+            details={"stream_id": stream.keitaro_id},
+        )
 
 
 def _describe_change(stream: Stream) -> str:
@@ -287,8 +345,16 @@ def _describe_change(stream: Stream) -> str:
     return ": ".join([parts[0], ", ".join(parts[1:])]) if len(parts) > 1 else parts[0]
 
 
-def _absorb_response(stream: Stream, response: dict) -> None:
-    """Adopt Keitaro's post-write state as the new baseline."""
+def _absorb_response(stream: Stream, response: dict) -> bool:
+    """Adopt Keitaro's post-write state as the new baseline.
+
+    Returns False when the response did not echo the stream's offers. An absent `offers`
+    key is not the same as "this stream has no offers", and treating them alike would
+    delete every local row and report the wipe as a successful push.
+    """
+    if not isinstance(response, dict) or "offers" not in response:
+        return False
+
     remote = {int(o["offer_id"]): o for o in (response.get("offers") or [])}
 
     for offer in list(stream.offers):
@@ -301,10 +367,11 @@ def _absorb_response(stream: Stream, response: dict) -> None:
         offer.share = share
         offer.removed = False
         offer.pinned = False
-        offer.keitaro_link_id = _as_int_or_none(raw.get("id"))
+        offer.keitaro_link_id = as_int(raw.get("id"))
 
     for position, offer in enumerate(sorted(stream.offers, key=lambda o: o.position)):
         offer.position = position
+    return True
 
 
 def _find_offer(stream: Stream, offer_id: int) -> StreamOffer:
@@ -314,17 +381,30 @@ def _find_offer(stream: Stream, offer_id: int) -> StreamOffer:
     return offer
 
 
+async def reload(session: AsyncSession, campaign: Campaign) -> Campaign:
+    """Re-read a campaign and its staged offers from the database.
+
+    The request's session loads the campaign before the per-campaign lock is taken, so by
+    the time an edit runs another request may already have committed. `populate_existing`
+    makes the fresh rows overwrite what the identity map cached, which is what keeps two
+    concurrent edits from each rebalancing a stale copy.
+    """
+    found = await session.scalar(
+        select(Campaign)
+        .where(Campaign.id == campaign.id)
+        .execution_options(populate_existing=True)
+    )
+    if found is None:
+        raise NotFoundError(f"Campaign {campaign.id} no longer exists.")
+    return found
+
+
 async def get_stream(session: AsyncSession, campaign: Campaign, stream_id: str) -> Stream:
     stream = await session.scalar(
-        select(Stream).where(Stream.id == stream_id, Stream.campaign_id == campaign.id)
+        select(Stream)
+        .where(Stream.id == stream_id, Stream.campaign_id == campaign.id)
+        .execution_options(populate_existing=True)
     )
     if stream is None:
         raise NotFoundError(f"Stream {stream_id} does not belong to this campaign.")
     return stream
-
-
-def _as_int_or_none(value: object) -> int | None:
-    try:
-        return int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None

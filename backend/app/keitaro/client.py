@@ -129,6 +129,20 @@ class KeitaroClient:
             logger.error("keitaro %s %s -> inline error: %s", method, path, message)
             raise KeitaroError(message, status_code=response.status_code, path=path)
 
+        # A reverse proxy in front of the tracker can answer 200 with an HTML error page.
+        # Callers expect JSON, so turn that into a KeitaroError here rather than letting a
+        # str reach code that will call .get() on it.
+        if not isinstance(payload, dict | list):
+            call.error = "Keitaro returned a non-JSON body"
+            logger.error("keitaro %s %s -> non-JSON body: %.200s", method, path, payload)
+            raise KeitaroError(
+                "Keitaro returned a non-JSON response. The tracker or a proxy in front of "
+                "it is probably misconfigured.",
+                status_code=response.status_code,
+                details=str(payload)[:500],
+                path=path,
+            )
+
         call.ok = True
         return payload
 
@@ -160,9 +174,6 @@ class KeitaroClient:
     async def create_campaign(self, payload: JSONDict) -> JSONDict:
         return await self._request("POST", "campaigns", json=payload)
 
-    async def update_campaign(self, campaign_id: int, payload: JSONDict) -> JSONDict:
-        return await self._request("PUT", f"campaigns/{campaign_id}", json=payload)
-
     async def delete_campaign(self, campaign_id: int) -> Any:
         return await self._request("DELETE", f"campaigns/{campaign_id}")
 
@@ -170,6 +181,9 @@ class KeitaroClient:
 
     async def list_streams(self, campaign_id: int) -> list[JSONDict]:
         return await self._request("GET", f"campaigns/{campaign_id}/streams")
+
+    async def get_stream(self, stream_id: int) -> JSONDict:
+        return await self._request("GET", f"streams/{stream_id}")
 
     async def create_stream(self, payload: JSONDict) -> JSONDict:
         # `campaign_id` belongs in the body here; the nested route does not exist.

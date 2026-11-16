@@ -45,17 +45,17 @@ class DomainRef(BaseModel):
     url: str
 
 
+class DictionaryDefaults(BaseModel):
+    group_id: int | None = None
+    traffic_source_id: int | None = None
+    domain_id: int | None = None
+
+
 class Dictionaries(BaseModel):
     groups: list[NamedRef]
     traffic_sources: list[NamedRef]
     domains: list[DomainRef]
     defaults: DictionaryDefaults
-
-
-class DictionaryDefaults(BaseModel):
-    group_id: int | None = None
-    traffic_source_id: int | None = None
-    domain_id: int | None = None
 
 
 class GroupCreate(BaseModel):
@@ -175,6 +175,9 @@ class StreamOut(BaseModel):
     state: str
     filters_summary: str
     accepts_offers: bool
+    # Sum of the active offers' shares. Anything but 0 (no offers) or 100 cannot be
+    # pushed, so the UI flags it as soon as it happens instead of at push time.
+    share_total: int
     offers: list[StreamOfferOut]
     stats: OfferStats = Field(default_factory=OfferStats)
 
@@ -215,8 +218,5 @@ class SyncLogOut(ORMModel):
     duration_ms: int
     error: str | None
     created_at: UtcDatetime
-    request_body: dict | list | None = None
+    request_body: dict | list | str | None = None
     response_body: dict | list | str | None = None
-
-
-Dictionaries.model_rebuild()

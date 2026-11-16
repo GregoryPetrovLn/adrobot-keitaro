@@ -4,7 +4,6 @@ import os
 from collections.abc import AsyncIterator
 
 import httpx
-import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -43,13 +42,6 @@ async def engine():
 
 
 @pytest_asyncio.fixture
-async def session(engine) -> AsyncIterator[AsyncSession]:
-    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
-    async with maker() as s:
-        yield s
-
-
-@pytest_asyncio.fixture
 async def app(engine, monkeypatch):
     """App wired to the in-memory database and a stub-friendly Keitaro client."""
     maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
@@ -78,8 +70,3 @@ async def api(app) -> AsyncIterator[AsyncClient]:
         app.router.lifespan_context(app),
     ):
         yield client
-
-
-@pytest.fixture
-def empty_report():
-    return {"rows": [], "total": 0}

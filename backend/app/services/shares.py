@@ -6,15 +6,18 @@ drive every edit in the UI:
 1. The active offers of a stream must sum to exactly 100.
 2. A *pinned* offer keeps the share the user typed; only unpinned offers absorb the slack.
 
-Integer division leaves a remainder, so the leftover points are handed out one at a time to
-the earliest unpinned offers (largest-remainder / Hamilton apportionment). That reproduces
-the reference app exactly: three offers become 34/33/33, and dropping one of four while a
-25% offer is pinned leaves 38/37/25.
+Unpinned offers share the remaining percentage points *evenly* — their previous values are
+not preserved proportionally. Integer division leaves a remainder, which is handed out one
+point at a time to the earliest unpinned offers. That matches what the reference tool does:
+three offers become 34/33/33, and dropping one of four while a 25% offer is pinned leaves
+38/37/25. Pinning is the mechanism for holding a share you do not want redistributed.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+from app.errors import ValidationError
 
 
 @dataclass
@@ -58,8 +61,6 @@ def total_share(slots: list[ShareSlot]) -> int:
 
 def validate_total(slots: list[ShareSlot]) -> None:
     """Raise if the shares cannot be pushed to Keitaro as-is."""
-    from app.errors import ValidationError
-
     if not slots:
         return
     total = total_share(slots)

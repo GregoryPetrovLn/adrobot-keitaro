@@ -45,8 +45,6 @@ uvicorn app.main:app --reload
 
 Open **http://127.0.0.1:8000**. The API docs are at **/docs**.
 
-> **Note:** avoid a project path containing `#` — Vite cannot resolve modules through one.
-
 ### Development mode (hot reload)
 
 Run the two halves separately. Vite proxies `/api` to the backend, so the frontend does
@@ -79,6 +77,11 @@ All settings are read from `.env` in the repository root (see `.env.example`).
 | `DEFAULT_DOMAIN_ID` | no | — | Pre-selects a domain. |
 | `CAMPAIGN_NAME_PREFIX` | no | *(empty)* | Prepended to every campaign name created here — handy on a shared tracker. |
 | `GOOGLE_REDIRECT_URL` | no | `https://www.google.com` | Where Flow 1 sends matching traffic. |
+| `CAMPAIGN_COST_TYPE` | no | `CPC` | Cost model for created campaigns. |
+| `CAMPAIGN_COST_CURRENCY` | no | `USD` | Cost currency. |
+| `CAMPAIGN_COST_AUTO` | no | `true` | Keitaro's "Из параметра `cost`" — read the cost off each click. |
+| `CAMPAIGN_UNIQUENESS_METHOD` | no | `ip_ua` | `ip_ua` or `ip`. |
+| `CAMPAIGN_COOKIES_TTL` | no | `24` | Uniqueness window, hours. |
 | `CORS_ORIGINS` | no | `http://localhost:5173,…` | Comma-separated origins allowed in dev mode. |
 | `LOG_LEVEL` | no | `INFO` | Standard Python log level. |
 
@@ -129,13 +132,14 @@ cd backend
 source .venv/bin/activate
 pip install -r requirements-dev.txt
 
-pytest              # 58 tests, no network access — Keitaro is mocked with respx
+pytest              # 74 tests, no network access — Keitaro is mocked with respx
 ruff check .        # lint
 ```
 
 The suite covers the exact payloads sent to Keitaro, the share arithmetic, the staging
 lifecycle (add / remove / bring back / push / cancel), rollback when campaign creation
-fails halfway, stats mapping, and the audit log.
+fails halfway, stats mapping, the audit log, and `tests/test_resilience.py` — stale-push
+conflicts, concurrent edits, malformed tracker responses and failed-call auditing.
 
 ---
 
@@ -147,7 +151,7 @@ One request creates three objects in Keitaro:
 
 | | Keitaro call | What it sends |
 | --- | --- | --- |
-| Campaign | `POST /campaigns` | `type: position`, `cost_type: CPC`, cost from the `cost` parameter, plus the chosen `group_id`, `traffic_source_id` and `domain_id` |
+| Campaign | `POST /campaigns` | `type: position`, `cost_type: CPC` with `cost_auto` (Keitaro reads the real cost from each click's `cost` parameter), plus the chosen `group_id`, `traffic_source_id` and `domain_id`. Cost model, currency and uniqueness are `CAMPAIGN_*` settings. |
 | Flow 1 | `POST /streams` | `schema: redirect` → `https://www.google.com`, filter `country accept [GEO]`, position 1 |
 | Flow 2 | `POST /streams` | `schema: landings` with the chosen offer at 100%, position 2 |
 
@@ -155,7 +159,9 @@ Because the campaign is `type: position`, flows are evaluated top-down: Flow 1 c
 chosen country, Flow 2 catches everyone else.
 
 If a flow fails to create, the half-built campaign is deleted again rather than left
-behind for someone to clean up by hand.
+behind for someone to clean up by hand. That cleanup is best-effort: if the delete itself
+fails the original error is still what you get back, and the orphan is recorded in the
+audit log.
 
 ### Part 2 — the stream editor
 
@@ -165,12 +171,19 @@ Edits are **staged locally** and only reach Keitaro when you press **Push to KT*
 - **Remove** an offer — it is greyed out and marked `removed`, with **Bring back** to undo.
   An offer that was never in Keitaro is dropped outright instead, since there is nothing
   to bring back to.
-- **Shares** always total exactly 100%. Typing a share **pins** it (📌) so it holds while
-  the others absorb the remainder; the leftover points from integer division go to the
-  earliest offers. Three offers become `34 / 33 / 33`; dropping one of four while a 25%
-  offer is pinned leaves `38 / 37 / 25`.
+- **Shares.** Unpinned offers split the remaining percentage evenly; the leftover points
+  from integer division go to the earliest offers. Three offers become `34 / 33 / 33`;
+  dropping one of four while a 25% offer is pinned leaves `38 / 37 / 25`. Note this is an
+  even split, not a proportional one — adding an offer to a 70/30 stream gives
+  `34 / 33 / 33`, and **pinning (📌) is how you hold a share you do not want
+  redistributed**. Typing a share pins it automatically.
+- Edits are serialised per campaign, so two tabs cannot each rebalance a stale copy. If
+  pins are set such that the total cannot reach 100%, the stream header says so and the
+  push is refused rather than sending bad weights to the tracker.
 - **Push to KT** sends one `PUT /streams/{id}` per changed stream and adopts Keitaro's
-  response as the new baseline.
+  response as the new baseline. Because that `PUT` replaces the offer list wholesale, each
+  stream is re-read first: if anyone changed it in Keitaro since your last fetch the push
+  is refused with a 409 instead of silently overwriting their work.
 - **Cancel** throws the staged changes away; **Fetch streams from KT** re-reads the
   tracker (and warns first, because it discards staged changes too).
 
@@ -189,7 +202,27 @@ The local schema is a staging area in front of Keitaro, not a second source of t
   `name` and `limit` and returns the entire list every time, so the autocomplete searches
   the local copy instead of re-downloading it on each keystroke.
 - `sync_logs` — every outbound Keitaro call with its payload, status and duration, exposed
-  at `GET /api/campaigns/{id}/logs`.
+  at `GET /api/campaigns/{id}/logs`. These rows are written in their own transaction and
+  committed immediately, so a call that fails — and rolls the request back — is still
+  recorded. A log that vanishes exactly when something breaks would be worse than none.
+
+### What I deliberately did not reproduce
+
+The brief says the interface is up to me, so I built the behaviour the reference tool has
+rather than its exact chrome. Two things from the video are not here, on purpose:
+
+- **"Show all offers"** — in this UI every stream's offers are always on screen, so there
+  is nothing to expand. The catalogue refresh that button's neighbour implied is here as
+  **Refresh offer catalogue**, which matters more: without it an offer created in Keitaro
+  after first boot would never appear in the pickers.
+- **The "Trends" column** — it was empty in every frame of the reference video and I could
+  not tell what it plotted. Rather than invent a sparkline, I spent the space on the
+  numbers I could verify against `report/build`: clicks, uniques, bots, conversions and
+  revenue, per offer and per stream.
+
+Beyond the brief, the editor also lets you **import** an existing Keitaro campaign (part 2
+says "an existing campaign", and something has to put one on the screen), browse the
+tracker's campaigns to find it, and create a campaign group inline.
 
 ---
 
@@ -222,7 +255,7 @@ suggests, and the client (`backend/app/keitaro/client.py`) documents each one in
 | `POST` | `/api/dictionaries/groups` | Create a campaign group |
 | `GET` | `/api/countries` | ISO-3166 alpha-2 list for the geo picker |
 | `GET` | `/api/offers?q=&limit=` | Search the cached offer catalogue |
-| `POST` | `/api/offers/sync` | Refresh the cache from Keitaro |
+| `POST` | `/api/offers/sync` | Refresh the cache from Keitaro (the "Refresh offer catalogue" button) |
 | `POST` | `/api/campaigns` | **Part 1** — create a campaign with both flows |
 | `GET` | `/api/campaigns` | Campaigns managed here |
 | `GET` | `/api/campaigns/keitaro?q=` | Browse campaigns that exist in Keitaro |

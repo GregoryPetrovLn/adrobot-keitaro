@@ -155,3 +155,41 @@ async def test_geo_is_normalised_to_upper_case(api, geo_input, expected):
     assert response.status_code == 201
     flow1 = json.loads(create_stream.calls[0].request.content)
     assert flow1["filters"][0]["payload"] == [expected]
+
+
+@respx.mock
+async def test_campaign_policy_follows_configuration(api, monkeypatch):
+    """Cost model and uniqueness are settings, not constants baked into the code."""
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("CAMPAIGN_COST_TYPE", "CPM")
+    monkeypatch.setenv("CAMPAIGN_COST_CURRENCY", "EUR")
+    monkeypatch.setenv("CAMPAIGN_UNIQUENESS_METHOD", "ip")
+    monkeypatch.setenv("CAMPAIGN_COOKIES_TTL", "48")
+    get_settings.cache_clear()
+
+    _dictionary_routes(respx.mock)
+    created = respx.post(f"{KT}/campaigns").mock(return_value=Response(200, json=fx.campaign()))
+    respx.post(f"{KT}/streams").mock(
+        side_effect=[
+            Response(200, json=fx.google_stream()),
+            Response(200, json=fx.offers_stream()),
+        ]
+    )
+    respx.get(f"{KT}/campaigns/211939/streams").mock(
+        return_value=Response(200, json=[fx.google_stream(), fx.offers_stream()])
+    )
+
+    try:
+        response = await api.post(
+            "/api/campaigns", json={"name": "policy", "geo": "AU", "offer_id": 3749}
+        )
+        assert response.status_code == 201, response.text
+        payload = json.loads(created.calls[0].request.content)
+        assert payload["cost_type"] == "CPM"
+        assert payload["cost_currency"] == "EUR"
+        assert payload["uniqueness_method"] == "ip"
+        assert payload["cookies_ttl"] == 48
+    finally:
+        get_settings.cache_clear()

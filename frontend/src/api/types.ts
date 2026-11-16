@@ -79,6 +79,7 @@ export interface Stream {
   state: string
   filters_summary: string
   accepts_offers: boolean
+  share_total: number
   offers: StreamOffer[]
   stats: Stats
 }

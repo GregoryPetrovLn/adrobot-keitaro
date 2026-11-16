@@ -105,29 +105,35 @@ export const api = {
     request<CampaignStreams>(`/campaigns/${id}/streams?interval=${interval}`),
   fetchStreams: (id: string, interval: string) =>
     request<CampaignStreams>(`/campaigns/${id}/fetch?interval=${interval}`, { method: 'POST' }),
-  addOffer: (id: string, streamId: string, offerId: number) =>
-    request<CampaignStreams>(`/campaigns/${id}/streams/${streamId}/offers`, {
-      method: 'POST',
-      body: JSON.stringify({ offer_id: offerId }),
-    }),
-  removeOffer: (id: string, streamId: string, offerId: number) =>
-    request<CampaignStreams>(`/campaigns/${id}/streams/${streamId}/offers/${offerId}`, {
-      method: 'DELETE',
-    }),
-  restoreOffer: (id: string, streamId: string, offerId: number) =>
-    request<CampaignStreams>(`/campaigns/${id}/streams/${streamId}/offers/${offerId}/restore`, {
-      method: 'POST',
-    }),
+  // Every editing call carries the stats period, otherwise the response would come back
+  // with today's numbers while the picker still says "Last 30 days".
+  addOffer: (id: string, streamId: string, offerId: number, interval: string) =>
+    request<CampaignStreams>(
+      `/campaigns/${id}/streams/${streamId}/offers?interval=${interval}`,
+      { method: 'POST', body: JSON.stringify({ offer_id: offerId }) },
+    ),
+  removeOffer: (id: string, streamId: string, offerId: number, interval: string) =>
+    request<CampaignStreams>(
+      `/campaigns/${id}/streams/${streamId}/offers/${offerId}?interval=${interval}`,
+      { method: 'DELETE' },
+    ),
+  restoreOffer: (id: string, streamId: string, offerId: number, interval: string) =>
+    request<CampaignStreams>(
+      `/campaigns/${id}/streams/${streamId}/offers/${offerId}/restore?interval=${interval}`,
+      { method: 'POST' },
+    ),
   patchOffer: (
     id: string,
     streamId: string,
     offerId: number,
     patch: { share?: number; pinned?: boolean },
+    interval: string,
   ) =>
-    request<CampaignStreams>(`/campaigns/${id}/streams/${streamId}/offers/${offerId}`, {
-      method: 'PATCH',
-      body: JSON.stringify(patch),
-    }),
+    request<CampaignStreams>(
+      `/campaigns/${id}/streams/${streamId}/offers/${offerId}?interval=${interval}`,
+      { method: 'PATCH', body: JSON.stringify(patch) },
+    ),
   push: (id: string) => request<PushResult>(`/campaigns/${id}/push`, { method: 'POST' }),
-  reset: (id: string) => request<CampaignStreams>(`/campaigns/${id}/reset`, { method: 'POST' }),
+  reset: (id: string, interval: string) =>
+    request<CampaignStreams>(`/campaigns/${id}/reset?interval=${interval}`, { method: 'POST' }),
 }

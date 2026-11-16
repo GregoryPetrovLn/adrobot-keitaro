@@ -10,6 +10,7 @@ venv/
 .mypy_cache/
 node_modules/
 dist/
+*.tsbuildinfo
 backend/app/static/
 .DS_Store
 .idea/

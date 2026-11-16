@@ -23,6 +23,7 @@ from app.keitaro.client import KeitaroClient
 from app.models import Campaign, utcnow
 from app.schemas import CampaignCreate
 from app.services import geo
+from app.services.ids import as_optional_ref
 from app.services.streams import sync_streams_from_keitaro
 
 logger = logging.getLogger(__name__)
@@ -46,12 +47,14 @@ def build_campaign_payload(
         "alias": alias,
         "type": "position",          # flows are evaluated top-down, which the brief relies on
         "state": "active",
-        "cost_type": "CPC",
+        "cost_type": settings.campaign_cost_type,
         "cost_value": 0,
-        "cost_currency": "USD",
-        "cost_auto": True,           # "Из параметра 'cost'"
-        "uniqueness_method": "ip_ua",
-        "cookies_ttl": 24,
+        "cost_currency": settings.campaign_cost_currency,
+        # cost_auto is Keitaro's "Из параметра 'cost'": take the real cost from the
+        # inbound click's `cost` parameter instead of a fixed per-click number.
+        "cost_auto": settings.campaign_cost_auto,
+        "uniqueness_method": settings.campaign_uniqueness_method,
+        "cookies_ttl": settings.campaign_cookies_ttl,
     }
     group_id = data.group_id if data.group_id is not None else settings.default_group_id
     source_id = (
@@ -138,11 +141,11 @@ async def create_campaign(
         name=str(created.get("name") or data.name),
         alias=str(created.get("alias") or alias),
         geo=data.geo,
-        group_id=_as_int_or_none(created.get("group_id")),
+        group_id=as_optional_ref(created.get("group_id")),
         group_name=dictionaries["group_name"],
-        traffic_source_id=_as_int_or_none(created.get("traffic_source_id")),
+        traffic_source_id=as_optional_ref(created.get("traffic_source_id")),
         traffic_source_name=dictionaries["source_name"],
-        domain_id=_as_int_or_none(created.get("domain_id")),
+        domain_id=as_optional_ref(created.get("domain_id")),
         domain_name=_domain_name(created.get("domain")) or dictionaries["domain_name"],
         campaign_url=_campaign_url(created),
         created_by_app=True,
@@ -177,10 +180,10 @@ async def import_campaign(
         name=str(remote.get("name") or f"Campaign {keitaro_id}"),
         alias=remote.get("alias"),
         geo=None,
-        group_id=_as_int_or_none(remote.get("group_id")),
+        group_id=as_optional_ref(remote.get("group_id")),
         group_name=remote.get("group") or None,
-        traffic_source_id=_as_int_or_none(remote.get("traffic_source_id")),
-        domain_id=_as_int_or_none(remote.get("domain_id")),
+        traffic_source_id=as_optional_ref(remote.get("traffic_source_id")),
+        domain_id=as_optional_ref(remote.get("domain_id")),
         domain_name=_domain_name(remote.get("domain")),
         campaign_url=_campaign_url(remote),
         created_by_app=False,
@@ -272,11 +275,3 @@ def _domain_name(domain: object) -> str | None:
     if not domain:
         return None
     return str(domain).replace("https://", "").replace("http://", "").strip("/") or None
-
-
-def _as_int_or_none(value: object) -> int | None:
-    try:
-        parsed = int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-    return parsed or None

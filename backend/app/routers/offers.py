@@ -20,7 +20,7 @@ async def search_offers(
     limit: int = Query(default=25, ge=1, le=200),
 ) -> list[OfferOut]:
     await offers_service.ensure_cache(session, client)
-    await record_calls(session, client, action="offers_cache")
+    await record_calls(client, action="offers_cache")
     found = await offers_service.search_offers(session, q, limit)
     return [OfferOut.model_validate(o) for o in found]
 
@@ -28,5 +28,5 @@ async def search_offers(
 @router.post("/sync", response_model=OfferSyncResult)
 async def sync_offers(session: SessionDep, client: KeitaroDep) -> OfferSyncResult:
     count, synced_at = await offers_service.sync_offers(session, client)
-    await record_calls(session, client, action="offers_sync")
+    await record_calls(client, action="offers_sync")
     return OfferSyncResult(synced=count, synced_at=synced_at)

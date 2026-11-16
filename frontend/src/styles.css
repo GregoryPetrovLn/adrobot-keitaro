@@ -194,3 +194,20 @@ tr.removed .offer-name { text-decoration: line-through; }
 .spinner { display: inline-block; width: 13px; height: 13px; border: 2px solid var(--border-strong); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: -2px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .row-gap { display: flex; gap: 8px; align-items: center; }
+
+.picker-input { position: relative; }
+.picker-clear {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: auto;
+  padding: 0 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 17px;
+  line-height: 1;
+}
+.picker-clear:hover:not(:disabled) { color: var(--text); background: transparent; }
+.picker-error { color: var(--danger); }

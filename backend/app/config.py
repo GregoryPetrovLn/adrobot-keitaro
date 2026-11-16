@@ -27,6 +27,15 @@ class Settings(BaseSettings):
     campaign_name_prefix: str = ""
     google_redirect_url: str = "https://www.google.com"
 
+    # Campaign policy. The brief does not specify these, so they are settings rather than
+    # constants — cost model and uniqueness are exactly the fields a media team has
+    # opinions about. The defaults mirror what the Keitaro UI creates.
+    campaign_cost_type: str = "CPC"
+    campaign_cost_currency: str = "USD"
+    campaign_cost_auto: bool = True
+    campaign_uniqueness_method: str = "ip_ua"
+    campaign_cookies_ttl: int = 24
+
     # --- App ---
     database_url: str = "sqlite+aiosqlite:///./adrobot.db"
     log_level: str = "INFO"

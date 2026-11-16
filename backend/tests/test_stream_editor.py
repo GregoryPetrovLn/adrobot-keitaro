@@ -154,9 +154,10 @@ async def test_pinning_holds_a_share_while_the_rest_rebalance(api):
     body = (await api.delete(f"{base}/3717")).json()
     assert _shares(body) == {3749: 50, 3717: 0, 11111: 50}
 
-    # Unpinning hands the stream back to even distribution.
+    # Unpinning hands the stream back to an even split of the active offers.
+    body = (await api.post(f"{base}/3717/restore")).json()
     body = (await api.patch(f"{base}/11111", json={"pinned": False})).json()
-    assert _shares(body) == {3749: 50, 3717: 0, 11111: 50}
+    assert _shares(body) == {3749: 34, 3717: 33, 11111: 33}
 
 
 @respx.mock
@@ -325,3 +326,29 @@ async def test_push_failure_leaves_the_staged_changes_intact(api):
     body = (await api.get(f"/api/campaigns/{campaign['id']}/streams")).json()
     assert body["has_pending_changes"] is True
     assert _shares(body) == {3749: 50, 3717: 50}
+
+
+@respx.mock
+async def test_an_unpushable_share_total_is_reported_before_the_push(api):
+    """Pinning past 100% is visible on the stream immediately, not only when pushing."""
+    _base_routes(
+        respx.mock,
+        offers=[fx.stream_offer(1, 3749, 50), fx.stream_offer(2, 3717, 50)],
+    )
+    campaign = await _import(api)
+    stream_id = _offers_stream_of(
+        (await api.get(f"/api/campaigns/{campaign['id']}/streams")).json()
+    )["id"]
+    base = f"/api/campaigns/{campaign['id']}/streams/{stream_id}/offers"
+
+    assert _offers_stream_of(
+        (await api.get(f"/api/campaigns/{campaign['id']}/streams")).json()
+    )["share_total"] == 100
+
+    await api.patch(f"{base}/3749", json={"share": 60})
+    body = (await api.patch(f"{base}/3717", json={"share": 60})).json()
+    assert _offers_stream_of(body)["share_total"] == 120
+
+    response = await api.post(f"/api/campaigns/{campaign['id']}/push")
+    assert response.status_code == 422
+    assert "add up to 100%" in response.json()["message"]

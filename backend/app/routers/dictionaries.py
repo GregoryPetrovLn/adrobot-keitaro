@@ -26,7 +26,7 @@ async def read_dictionaries(
     groups = await client.list_campaign_groups()
     sources = await client.list_traffic_sources()
     domains = await client.list_domains()
-    await record_calls(session, client, action="dictionaries")
+    await record_calls(client, action="dictionaries")
 
     return Dictionaries(
         groups=[NamedRef(id=int(g["id"]), name=str(g.get("name") or "")) for g in groups],
@@ -52,7 +52,7 @@ async def read_dictionaries(
 @router.post("/dictionaries/groups", response_model=NamedRef, status_code=201)
 async def create_group(body: GroupCreate, client: KeitaroDep, session: SessionDep) -> NamedRef:
     created = await client.create_campaign_group(body.name)
-    await record_calls(session, client, action="create_group")
+    await record_calls(client, action="create_group")
     return NamedRef(id=int(created["id"]), name=str(created.get("name") or body.name))
 
 

@@ -107,6 +107,12 @@ def _mount_frontend(app: FastAPI) -> None:
     # which FastAPI would otherwise try to turn into a Pydantic field.
     @app.get("/{full_path:path}", include_in_schema=False, response_model=None)
     async def spa(full_path: str) -> FileResponse | JSONResponse:
+        # Real API routes are registered before this catch-all and win. Anything else
+        # under /api is a typo, and answering it with the SPA shell at HTTP 200 would
+        # hide the mistake from any client that checks the status code.
+        if full_path.startswith("api/") or full_path in {"api", "docs", "openapi.json"}:
+            return JSONResponse(status_code=404, content={"message": "Not found."})
+
         candidate = (STATIC_DIR / full_path).resolve()
         if (
             full_path

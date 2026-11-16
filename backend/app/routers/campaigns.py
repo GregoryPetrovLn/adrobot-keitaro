@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.deps import CampaignDep, KeitaroDep, SessionDep, SettingsDep
 from app.keitaro.client import KeitaroClient
+from app.locks import campaign_lock
 from app.models import Campaign, SyncLog
 from app.schemas import (
     CampaignCreate,
@@ -42,12 +43,14 @@ async def create_campaign(
     body: CampaignCreate, session: SessionDep, client: KeitaroDep, settings: SettingsDep
 ) -> CampaignOut:
     await offers_service.ensure_cache(session, client)
+    created_id: str | None = None
     try:
         campaign = await campaign_service.create_campaign(session, client, settings, body)
+        created_id = campaign.id
     finally:
         # Log the attempt whether or not it succeeded — a failed create is the
-        # interesting case.
-        await record_calls(session, client, action="create_campaign")
+        # interesting case, and these rows are committed independently of this request.
+        await record_calls(client, action="create_campaign", campaign_id=created_id)
     return CampaignOut.model_validate(campaign)
 
 
@@ -56,10 +59,12 @@ async def import_campaign(
     body: CampaignImport, session: SessionDep, client: KeitaroDep
 ) -> CampaignOut:
     await offers_service.ensure_cache(session, client)
+    created_id: str | None = None
     try:
         campaign = await campaign_service.import_campaign(session, client, body.keitaro_id)
+        created_id = campaign.id
     finally:
-        await record_calls(session, client, action="import_campaign")
+        await record_calls(client, action="import_campaign", campaign_id=created_id)
     return CampaignOut.model_validate(campaign)
 
 
@@ -78,7 +83,7 @@ async def list_keitaro_campaigns(
 ) -> list[KeitaroCampaignRef]:
     """Browse campaigns that live in Keitaro, so existing ones can be imported."""
     remote = await client.list_campaigns()
-    await record_calls(session, client, action="list_keitaro_campaigns")
+    await record_calls(client, action="list_keitaro_campaigns")
 
     imported = set(
         (await session.execute(select(Campaign.keitaro_id))).scalars()
@@ -134,7 +139,7 @@ async def build_view(
     campaign_stats = await stats_service.fetch_campaign_stats(
         client, campaign.keitaro_id, resolved_interval
     )
-    await record_calls(session, client, action="read_stats", campaign_id=campaign.id)
+    await record_calls(client, action="read_stats", campaign_id=campaign.id)
     return _render(campaign, campaign_stats, resolved_interval, settings.keitaro_base_url)
 
 
@@ -163,7 +168,7 @@ async def fetch_streams(
     try:
         await stream_service.sync_streams_from_keitaro(session, client, campaign)
     finally:
-        await record_calls(session, client, action="fetch_streams", campaign_id=campaign.id)
+        await record_calls(client, action="fetch_streams", campaign_id=campaign.id)
     return await build_view(campaign, session, client, settings, interval)
 
 
@@ -175,11 +180,14 @@ async def add_offer(
     session: SessionDep,
     client: KeitaroDep,
     settings: SettingsDep,
+    interval: str = Query(default=stats_service.DEFAULT_INTERVAL),
 ) -> CampaignStreamsOut:
-    stream = await stream_service.get_stream(session, campaign, stream_id)
     await offers_service.ensure_cache(session, client)
-    await stream_service.add_offer(session, stream, body.offer_id)
-    return await build_view(campaign, session, client, settings)
+    async with campaign_lock(campaign.id):
+        stream = await stream_service.get_stream(session, campaign, stream_id)
+        await stream_service.add_offer(session, stream, body.offer_id)
+        await session.commit()
+    return await build_view(campaign, session, client, settings, interval)
 
 
 @router.delete(
@@ -192,10 +200,13 @@ async def remove_offer(
     session: SessionDep,
     client: KeitaroDep,
     settings: SettingsDep,
+    interval: str = Query(default=stats_service.DEFAULT_INTERVAL),
 ) -> CampaignStreamsOut:
-    stream = await stream_service.get_stream(session, campaign, stream_id)
-    await stream_service.remove_offer(session, stream, offer_id)
-    return await build_view(campaign, session, client, settings)
+    async with campaign_lock(campaign.id):
+        stream = await stream_service.get_stream(session, campaign, stream_id)
+        await stream_service.remove_offer(session, stream, offer_id)
+        await session.commit()
+    return await build_view(campaign, session, client, settings, interval)
 
 
 @router.post(
@@ -209,10 +220,13 @@ async def restore_offer(
     session: SessionDep,
     client: KeitaroDep,
     settings: SettingsDep,
+    interval: str = Query(default=stats_service.DEFAULT_INTERVAL),
 ) -> CampaignStreamsOut:
-    stream = await stream_service.get_stream(session, campaign, stream_id)
-    await stream_service.restore_offer(session, stream, offer_id)
-    return await build_view(campaign, session, client, settings)
+    async with campaign_lock(campaign.id):
+        stream = await stream_service.get_stream(session, campaign, stream_id)
+        await stream_service.restore_offer(session, stream, offer_id)
+        await session.commit()
+    return await build_view(campaign, session, client, settings, interval)
 
 
 @router.patch(
@@ -226,20 +240,25 @@ async def patch_offer(
     session: SessionDep,
     client: KeitaroDep,
     settings: SettingsDep,
+    interval: str = Query(default=stats_service.DEFAULT_INTERVAL),
 ) -> CampaignStreamsOut:
-    stream = await stream_service.get_stream(session, campaign, stream_id)
-    await stream_service.patch_offer(
-        session, stream, offer_id, share=body.share, pinned=body.pinned
-    )
-    return await build_view(campaign, session, client, settings)
+    async with campaign_lock(campaign.id):
+        stream = await stream_service.get_stream(session, campaign, stream_id)
+        await stream_service.patch_offer(
+            session, stream, offer_id, share=body.share, pinned=body.pinned
+        )
+        await session.commit()
+    return await build_view(campaign, session, client, settings, interval)
 
 
 @router.post("/{campaign_id}/push", response_model=PushResult)
 async def push(campaign: CampaignDep, session: SessionDep, client: KeitaroDep) -> PushResult:
-    try:
-        applied = await stream_service.push_campaign(session, client, campaign)
-    finally:
-        await record_calls(session, client, action="push", campaign_id=campaign.id)
+    async with campaign_lock(campaign.id):
+        campaign = await stream_service.reload(session, campaign)
+        try:
+            applied = await stream_service.push_campaign(session, client, campaign)
+        finally:
+            await record_calls(client, action="push", campaign_id=campaign.id)
     return PushResult(
         pushed_streams=len(applied),
         applied=applied,
@@ -253,9 +272,13 @@ async def reset(
     session: SessionDep,
     client: KeitaroDep,
     settings: SettingsDep,
+    interval: str = Query(default=stats_service.DEFAULT_INTERVAL),
 ) -> CampaignStreamsOut:
-    await stream_service.reset_campaign(session, campaign)
-    return await build_view(campaign, session, client, settings)
+    async with campaign_lock(campaign.id):
+        campaign = await stream_service.reload(session, campaign)
+        await stream_service.reset_campaign(session, campaign)
+        await session.commit()
+    return await build_view(campaign, session, client, settings, interval)
 
 
 @router.get("/{campaign_id}/logs", response_model=list[SyncLogOut])
@@ -298,7 +321,7 @@ def _render(
                     **campaign_stats.offer(stream.keitaro_id, o.offer_id).as_dict()
                 ),
             )
-            for o in sorted(stream.offers, key=lambda o: (o.removed, o.position))
+            for o in sorted(stream.offers, key=lambda o: o.position)
         ]
         streams.append(
             StreamOut(
@@ -311,6 +334,7 @@ def _render(
                 state=stream.state,
                 filters_summary=_summarise_filters(stream.filters),
                 accepts_offers=stream.accepts_offers,
+                share_total=sum(o.share for o in stream.offers if not o.removed),
                 offers=offer_rows,
                 stats=OfferStats(**campaign_stats.stream(stream.keitaro_id).as_dict()),
             )

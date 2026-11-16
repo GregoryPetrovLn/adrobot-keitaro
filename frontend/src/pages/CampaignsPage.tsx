@@ -29,6 +29,10 @@ export function CampaignsPage() {
   const [importBusy, setImportBusy] = useState(false)
   const [importError, setImportError] = useState<string | null>(null)
 
+  const [listError, setListError] = useState<string | null>(null)
+  const [syncNotice, setSyncNotice] = useState<string | null>(null)
+  const [syncing, setSyncing] = useState(false)
+
   useEffect(() => {
     void (async () => {
       try {
@@ -117,8 +121,26 @@ export function CampaignsPage() {
   }
 
   async function forget(id: string) {
-    await api.forgetCampaign(id)
-    setCampaigns((current) => current.filter((campaign) => campaign.id !== id))
+    setListError(null)
+    try {
+      await api.forgetCampaign(id)
+      setCampaigns((current) => current.filter((campaign) => campaign.id !== id))
+    } catch (error) {
+      setListError(errorMessage(error))
+    }
+  }
+
+  async function refreshOfferCatalogue() {
+    setListError(null)
+    setSyncing(true)
+    try {
+      const result = await api.syncOffers()
+      setSyncNotice(`Offer catalogue refreshed: ${result.synced} offers available.`)
+    } catch (error) {
+      setListError(errorMessage(error))
+    } finally {
+      setSyncing(false)
+    }
   }
 
   if (loadError) {
@@ -302,7 +324,21 @@ export function CampaignsPage() {
       </div>
 
       <section className="card">
-        <h2>Managed campaigns</h2>
+        <div className="toolbar">
+          <h2 style={{ margin: 0 }}>Managed campaigns</h2>
+          <div className="spacer" />
+          <button
+            className="sm"
+            data-testid="sync-offers"
+            disabled={syncing}
+            title="Re-read the offer catalogue from Keitaro so new offers appear in the pickers"
+            onClick={refreshOfferCatalogue}
+          >
+            {syncing ? <span className="spinner" /> : '⟳ Refresh offer catalogue'}
+          </button>
+        </div>
+        {listError && <Banner kind="error">{listError}</Banner>}
+        {syncNotice && !listError && <Banner kind="ok">{syncNotice}</Banner>}
         {campaigns.length === 0 ? (
           <div className="empty-state">
             No campaigns yet. Create one above, or import an existing one from Keitaro.
