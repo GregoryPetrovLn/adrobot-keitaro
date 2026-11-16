@@ -57,14 +57,29 @@ async def ensure_cache(session: AsyncSession, client: KeitaroClient) -> None:
         await sync_offers(session, client)
 
 
+# Offer ids are ordinary 32-bit integers. Anything larger cannot match one, and binding
+# it would overflow the database's INTEGER type (SQLite raises OverflowError) rather than
+# simply finding nothing.
+MAX_OFFER_ID = 2**31 - 1
+
+
+def _like_pattern(term: str) -> str:
+    """Build a contains-pattern, escaping LIKE's own wildcards.
+
+    Offer names are full of brackets and punctuation, and a user typing `%` or `_` means
+    those characters — not "match anything".
+    """
+    escaped = term.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 async def search_offers(session: AsyncSession, query: str | None, limit: int = 25) -> list[Offer]:
     stmt = select(Offer).where(Offer.state == "active")
     if query:
         term = query.strip()
         if term:
-            like = f"%{term.lower()}%"
-            conditions = [func.lower(Offer.name).like(like)]
-            if term.isdigit():
+            conditions = [func.lower(Offer.name).like(_like_pattern(term), escape="\\")]
+            if term.isdigit() and int(term) <= MAX_OFFER_ID:
                 conditions.append(Offer.id == int(term))
             stmt = stmt.where(or_(*conditions))
     stmt = stmt.order_by(Offer.name).limit(limit)
