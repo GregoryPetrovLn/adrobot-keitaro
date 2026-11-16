@@ -110,7 +110,12 @@ class CampaignCreate(BaseModel):
     @field_validator("name")
     @classmethod
     def _clean_name(cls, v: str) -> str:
-        return v.strip()
+        # `min_length` runs against the raw value, so "   " would otherwise pass here and
+        # reach Keitaro as an empty name.
+        name = v.strip()
+        if not name:
+            raise ValueError("Campaign name cannot be blank")
+        return name
 
 
 class CampaignImport(BaseModel):

@@ -209,3 +209,43 @@ async def test_a_failed_rollback_tells_the_user_about_the_orphan(api):
     assert response.status_code == 502
     message = response.json()["message"]
     assert "211939" in message and "left in Keitaro" in message
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t\n"])
+@respx.mock
+async def test_a_blank_campaign_name_is_rejected(api, blank):
+    _dictionary_routes(respx.mock)
+    created = respx.post(f"{KT}/campaigns")
+    response = await api.post(
+        "/api/campaigns", json={"name": blank, "geo": "RO", "offer_id": 3749}
+    )
+    assert response.status_code == 422
+    assert not created.called
+
+
+@pytest.mark.parametrize(
+    "name,expected_prefix",
+    [
+        ("Моя кампания", "campaign-"),      # no ASCII to slug; fall back
+        ("日本語テスト", "campaign-"),
+        ("!!!", "campaign-"),
+        ("Test — Campaign (2026) #1", "test-campaign-2026-1-"),
+    ],
+)
+def test_aliases_are_url_safe_whatever_the_name(name, expected_prefix):
+    """Keitaro aliases become part of the tracking URL, so they must stay ASCII-safe."""
+    from app.services.campaigns import make_alias
+
+    alias = make_alias(name)
+    assert alias.startswith(expected_prefix)
+    assert alias.replace("-", "").isalnum()
+    assert alias.islower()
+    assert len(alias) <= 47
+
+
+def test_long_names_produce_a_bounded_alias():
+    from app.services.campaigns import make_alias
+
+    alias = make_alias("a" * 500)
+    assert len(alias) <= 47
+    assert make_alias("x" * 500) != make_alias("x" * 500), "aliases carry a random suffix"
