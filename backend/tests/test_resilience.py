@@ -332,3 +332,18 @@ async def test_audit_rows_do_not_fight_the_request_for_the_write_lock(api):
     assert logs, "no audit rows were written at all"
     assert all(log["id"] and log["created_at"] for log in logs), "defaults must be applied"
     assert any(not log["ok"] for log in logs), "the failed call must be there"
+
+
+@respx.mock
+async def test_a_fetch_racing_an_edit_leaves_a_consistent_stream(api):
+    """"Fetch from KT" rewrites the snapshot, so it must not interleave with an edit."""
+    _routes(respx.mock, offers=[fx.stream_offer(1, 3749, 50), fx.stream_offer(2, 3717, 50)])
+    campaign_id, stream_id = await _setup(api)
+    base = f"/api/campaigns/{campaign_id}/streams/{stream_id}/offers"
+
+    await asyncio.gather(
+        api.post(f"/api/campaigns/{campaign_id}/fetch"),
+        api.post(base, json={"offer_id": 11111}),
+    )
+    body = (await api.get(f"/api/campaigns/{campaign_id}/streams")).json()
+    assert _total(body) == 100

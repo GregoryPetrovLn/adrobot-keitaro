@@ -132,7 +132,7 @@ cd backend
 source .venv/bin/activate
 pip install -r requirements-dev.txt
 
-pytest              # 98 tests, no network access — Keitaro is mocked with respx
+pytest              # 99 tests, no network access — Keitaro is mocked with respx
 ruff check .        # lint
 ```
 

@@ -172,10 +172,14 @@ async def fetch_streams(
 ) -> CampaignStreamsOut:
     """"Fetch streams from KT": hard-reset the local snapshot from the tracker."""
     await offers_service.ensure_cache(session, client)
-    try:
-        await stream_service.sync_streams_from_keitaro(session, client, campaign)
-    finally:
-        await record_calls(client, action="fetch_streams", campaign_id=campaign.id)
+    # A fetch rewrites the whole local snapshot, so it takes the same lock as an edit.
+    async with campaign_lock(campaign.id):
+        campaign = await stream_service.reload(session, campaign)
+        try:
+            await stream_service.sync_streams_from_keitaro(session, client, campaign)
+            await session.commit()
+        finally:
+            await record_calls(client, action="fetch_streams", campaign_id=campaign.id)
     # "Fetch from KT" means "show me the truth", so the cache is bypassed here.
     return await build_view(campaign, session, client, settings, interval, fresh_stats=True)
 
