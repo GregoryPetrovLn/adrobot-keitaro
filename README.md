@@ -176,9 +176,11 @@ Edits are **staged locally** and only reach Keitaro when you press **Push to KT*
   even split, not a proportional one — adding an offer to a 70/30 stream gives
   `34 / 33 / 33`, and **pinning (📌) is how you hold a share you do not want
   redistributed**. Typing a share pins it automatically.
-- Edits are serialised per campaign, so two tabs cannot each rebalance a stale copy. If
-  pins are set such that the total cannot reach 100%, the stream header says so and the
-  push is refused rather than sending bad weights to the tracker.
+- Edits are serialised per campaign, so two tabs cannot each rebalance a stale copy. That
+  lock is process-local, which covers the single-process deployment above; behind several
+  workers the push-time check is the backstop. Either way, if pins are set such that the
+  total cannot reach 100%, the stream header says so and the push is refused rather than
+  sending bad weights to the tracker.
 - **Push to KT** sends one `PUT /streams/{id}` per changed stream and adopts Keitaro's
   response as the new baseline. Because that `PUT` replaces the offer list wholesale, each
   stream is re-read first: if anyone changed it in Keitaro since your last fetch the push
@@ -204,9 +206,11 @@ The local schema is a staging area in front of Keitaro, not a second source of t
   `name` and `limit` and returns the entire list every time, so the autocomplete searches
   the local copy instead of re-downloading it on each keystroke.
 - `sync_logs` — every outbound Keitaro call with its payload, status and duration, exposed
-  at `GET /api/campaigns/{id}/logs`. These rows are written in their own transaction and
-  committed immediately, so a call that fails — and rolls the request back — is still
-  recorded. A log that vanishes exactly when something breaks would be worse than none.
+  at `GET /api/campaigns/{id}/logs`. Rows are buffered during the request and written once
+  its transaction has committed *or rolled back*, so a failed call is still recorded — a
+  log that vanishes exactly when something breaks would be worse than none. (Writing them
+  on a second connection instead deadlocks against the request's own open transaction on
+  SQLite, which is how they were being lost before.)
 
 ### What I deliberately did not reproduce
 
