@@ -4,6 +4,7 @@ import os
 from collections.abc import AsyncIterator
 
 import httpx
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -23,6 +24,16 @@ from app.main import create_app  # noqa: E402
 from app.models import Base  # noqa: E402
 
 KT = "https://kt.test/admin_api/v1"
+
+
+@pytest.fixture(autouse=True)
+def clear_stats_cache():
+    """The stats cache is process-global; tests must not inherit each other's numbers."""
+    from app.services import stats
+
+    stats._cache.clear()
+    yield
+    stats._cache.clear()
 
 
 @pytest_asyncio.fixture

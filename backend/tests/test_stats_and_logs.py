@@ -117,3 +117,51 @@ async def test_timestamps_are_always_serialised_as_utc(api):
     assert reread["created_at"].endswith("Z")
     assert reread["created_at"] == created["created_at"]
     assert reread["streams_fetched_at"].endswith("Z")
+
+
+@respx.mock
+async def test_editing_reuses_recent_stats_instead_of_rebuilding_reports(api):
+    """Retyping shares must not hammer Keitaro's heaviest endpoint once per click."""
+    reports = respx.mock.post(f"{KT}/report/build").mock(
+        return_value=Response(200, json=STREAM_ROWS)
+    )
+    respx.mock.get(f"{KT}/offers").mock(return_value=Response(200, json=fx.OFFERS))
+    respx.mock.get(f"{KT}/campaigns/211939").mock(return_value=Response(200, json=fx.campaign()))
+    respx.mock.get(f"{KT}/campaigns/211939/streams").mock(
+        return_value=Response(
+            200,
+            json=[
+                fx.google_stream(),
+                fx.offers_stream(
+                    offers=[fx.stream_offer(1, 3749, 50), fx.stream_offer(2, 3717, 50)]
+                ),
+            ],
+        )
+    )
+
+    campaign = (await api.post("/api/campaigns/import", json={"keitaro_id": 211939})).json()
+    await api.get(f"/api/campaigns/{campaign['id']}/streams")
+    after_first_read = reports.call_count
+    assert after_first_read == 2, "one read builds the stream and the stream+offer reports"
+
+    body = (await api.get(f"/api/campaigns/{campaign['id']}/streams")).json()
+    assert reports.call_count == after_first_read, "a second read inside the TTL is served warm"
+    # The cached numbers are still the real ones, not zeros.
+    assert next(s for s in body["streams"] if s["accepts_offers"])["stats"]["clicks"] == 13
+
+
+@respx.mock
+async def test_fetch_from_keitaro_always_rebuilds_the_reports(api):
+    """"Fetch streams from KT" means "show me the truth", so it bypasses the cache."""
+    reports = respx.mock.post(f"{KT}/report/build").mock(
+        return_value=Response(200, json=fx.EMPTY_REPORT)
+    )
+    _routes(respx.mock, [Response(200, json=fx.EMPTY_REPORT)] * 2)
+    respx.mock.post(f"{KT}/report/build").mock(return_value=Response(200, json=fx.EMPTY_REPORT))
+
+    campaign = (await api.post("/api/campaigns/import", json={"keitaro_id": 211939})).json()
+    await api.get(f"/api/campaigns/{campaign['id']}/streams")
+    warm = reports.call_count
+
+    await api.post(f"/api/campaigns/{campaign['id']}/fetch")
+    assert reports.call_count > warm

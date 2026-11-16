@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from time import monotonic
 
 from app.errors import KeitaroError
 from app.keitaro.client import KeitaroClient
@@ -85,14 +86,38 @@ def normalise_interval(interval: str | None) -> str:
     return value if value in ALLOWED_INTERVALS else DEFAULT_INTERVAL
 
 
+# Every editing endpoint returns the whole campaign view, stats included, so a user
+# retyping a few shares would otherwise trigger two report builds per click on Keitaro's
+# heaviest endpoint. Click counts do not move meaningfully in that window, so they are
+# cached briefly per (campaign, interval).
+CACHE_TTL_SECONDS = 20.0
+_cache: dict[tuple[int, str], tuple[float, CampaignStats]] = {}
+
+
+def invalidate_cache(keitaro_campaign_id: int) -> None:
+    for key in [k for k in _cache if k[0] == keitaro_campaign_id]:
+        del _cache[key]
+
+
 async def fetch_campaign_stats(
-    client: KeitaroClient, keitaro_campaign_id: int, interval: str = DEFAULT_INTERVAL
+    client: KeitaroClient,
+    keitaro_campaign_id: int,
+    interval: str = DEFAULT_INTERVAL,
+    *,
+    use_cache: bool = True,
 ) -> CampaignStats:
     """Fetch click stats for one campaign, grouped by stream and by stream+offer.
 
     Statistics are a nice-to-have on an editor screen: if the report builder is unavailable
     we return empty counters flagged `available=False` rather than failing the whole page.
     """
+    key = (keitaro_campaign_id, interval)
+    now = monotonic()
+    if use_cache:
+        cached = _cache.get(key)
+        if cached is not None and now - cached[0] < CACHE_TTL_SECONDS:
+            return cached[1]
+
     result = CampaignStats()
     filters = [
         {"name": "campaign_id", "operator": "EQUALS", "expression": str(keitaro_campaign_id)}
@@ -107,6 +132,8 @@ async def fetch_campaign_stats(
         )
     except KeitaroError as exc:
         logger.warning("stats unavailable for campaign %s: %s", keitaro_campaign_id, exc.message)
+        # Deliberately not cached: a transient tracker failure should not blank the
+        # numbers for the next 20 seconds of clicking.
         return CampaignStats(available=False, error=exc.message)
 
     for row in stream_report.get("rows", []):
@@ -121,6 +148,7 @@ async def fetch_campaign_stats(
         if stream_id and offer_id:
             result.by_stream_offer[(stream_id, offer_id)] = _row_to_stats(row)
 
+    _cache[key] = (now, result)
     return result
 
 

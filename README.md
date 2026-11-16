@@ -132,7 +132,7 @@ cd backend
 source .venv/bin/activate
 pip install -r requirements-dev.txt
 
-pytest              # 74 tests, no network access — Keitaro is mocked with respx
+pytest              # 77 tests, no network access — Keitaro is mocked with respx
 ruff check .        # lint
 ```
 
@@ -188,7 +188,10 @@ Edits are **staged locally** and only reach Keitaro when you press **Push to KT*
   tracker (and warns first, because it discards staged changes too).
 
 Each offer row shows clicks, uniques, bots, conversions and revenue for the selected
-period, read from `POST /report/build` grouped by `stream_id` + `offer_id`.
+period, read from `POST /report/build` grouped by `stream_id` + `offer_id`. Those numbers
+are cached for 20 seconds per campaign and period: every editing call returns the whole
+view, and retyping a few shares should not mean a report build per keystroke on Keitaro's
+heaviest endpoint. "Fetch streams from KT" bypasses the cache.
 
 ### Why there is a database at all
 

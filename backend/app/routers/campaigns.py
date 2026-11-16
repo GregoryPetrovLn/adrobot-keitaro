@@ -6,6 +6,7 @@ from fastapi import APIRouter, Query
 from fastapi.responses import Response
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import noload
 
 from app.config import Settings
 from app.deps import CampaignDep, KeitaroDep, SessionDep, SettingsDep
@@ -70,7 +71,11 @@ async def import_campaign(
 
 @router.get("", response_model=list[CampaignOut])
 async def list_campaigns(session: SessionDep) -> list[CampaignOut]:
-    rows = await session.execute(select(Campaign).order_by(desc(Campaign.created_at)))
+    # CampaignOut renders no streams, so skip the relationship's eager load rather than
+    # pulling every stream and offer row to build a summary table.
+    rows = await session.execute(
+        select(Campaign).options(noload(Campaign.streams)).order_by(desc(Campaign.created_at))
+    )
     return [CampaignOut.model_validate(c) for c in rows.scalars()]
 
 
@@ -129,6 +134,8 @@ async def build_view(
     client: KeitaroClient,
     settings: Settings,
     interval: str = stats_service.DEFAULT_INTERVAL,
+    *,
+    fresh_stats: bool = False,
 ) -> CampaignStreamsOut:
     """The editor's view of a campaign: staged streams plus click stats per offer.
 
@@ -137,7 +144,7 @@ async def build_view(
     """
     resolved_interval = stats_service.normalise_interval(interval)
     campaign_stats = await stats_service.fetch_campaign_stats(
-        client, campaign.keitaro_id, resolved_interval
+        client, campaign.keitaro_id, resolved_interval, use_cache=not fresh_stats
     )
     await record_calls(client, action="read_stats", campaign_id=campaign.id)
     return _render(campaign, campaign_stats, resolved_interval, settings.keitaro_base_url)
@@ -169,7 +176,8 @@ async def fetch_streams(
         await stream_service.sync_streams_from_keitaro(session, client, campaign)
     finally:
         await record_calls(client, action="fetch_streams", campaign_id=campaign.id)
-    return await build_view(campaign, session, client, settings, interval)
+    # "Fetch from KT" means "show me the truth", so the cache is bypassed here.
+    return await build_view(campaign, session, client, settings, interval, fresh_stats=True)
 
 
 @router.post("/{campaign_id}/streams/{stream_id}/offers", response_model=CampaignStreamsOut)
