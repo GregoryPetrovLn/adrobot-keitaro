@@ -12,7 +12,7 @@ from app.models import SyncLog
 
 def _truncate(value: Any, limit: int = 8000) -> Any:
     """Keep audit rows small: long payloads are stored as a clipped string."""
-    if value is None or isinstance(value, (int, float, bool)):
+    if value is None or isinstance(value, int | float | bool):
         return value
     if isinstance(value, str):
         return value[:limit]

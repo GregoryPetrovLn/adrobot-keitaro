@@ -31,7 +31,7 @@ class Dictionaries(BaseModel):
     groups: list[NamedRef]
     traffic_sources: list[NamedRef]
     domains: list[DomainRef]
-    defaults: "DictionaryDefaults"
+    defaults: DictionaryDefaults
 
 
 class DictionaryDefaults(BaseModel):
@@ -73,7 +73,9 @@ class CampaignCreate(BaseModel):
     """Part 1 of the task: name + geo + offer is all the user has to supply."""
 
     name: str = Field(min_length=1, max_length=200)
-    geo: str = Field(min_length=2, max_length=2, description="ISO-3166 alpha-2 country code")
+    # No length constraint here: the validator strips surrounding whitespace first and
+    # then checks the value against the real ISO-3166 list, which is stricter anyway.
+    geo: str = Field(description="ISO-3166 alpha-2 country code, e.g. RO")
     offer_id: int = Field(gt=0)
     group_id: int | None = None
     traffic_source_id: int | None = None

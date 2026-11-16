@@ -35,6 +35,10 @@ async def sync_streams_from_keitaro(
     This is the "Fetch streams from KT" button: it is a hard reset, so any staged change
     that was not pushed is discarded. The UI warns before calling it.
     """
+    # Relationship access must never trigger a lazy load inside async code, so the
+    # collection is explicitly (re)loaded here.
+    await session.refresh(campaign, attribute_names=["streams"])
+
     remote_streams = await client.list_streams(campaign.keitaro_id)
     offer_ids = {
         int(o["offer_id"])
@@ -52,8 +56,7 @@ async def sync_streams_from_keitaro(
         seen.add(kt_id)
         stream = existing.get(kt_id)
         if stream is None:
-            stream = Stream(campaign_id=campaign.id, keitaro_id=kt_id, name="", schema_type="")
-            session.add(stream)
+            stream = Stream(keitaro_id=kt_id, name="", schema_type="")
             campaign.streams.append(stream)
 
         stream.name = str(raw.get("name") or f"Stream {kt_id}")
@@ -76,23 +79,37 @@ async def sync_streams_from_keitaro(
 
 
 def _replace_offers(stream: Stream, raw_offers: list[dict], names: dict[int, str]) -> None:
-    stream.offers.clear()
+    """Reconcile a stream's offer rows with what Keitaro just reported.
+
+    Rows are matched on `offer_id` and updated in place rather than cleared and recreated:
+    a clear-then-append would make SQLAlchemy emit the INSERT before the DELETE in the same
+    flush and trip the `(stream_id, offer_id)` unique constraint.
+    """
+    by_offer = {o.offer_id: o for o in stream.offers}
+    seen: set[int] = set()
+
     for position, raw in enumerate(raw_offers):
         offer_id = int(raw["offer_id"])
         share = int(raw.get("share") or 0)
-        stream.offers.append(
-            StreamOffer(
-                stream_id=stream.id,
-                offer_id=offer_id,
-                offer_name=names.get(offer_id),
-                keitaro_link_id=_as_int_or_none(raw.get("id")),
-                kt_share=share,
-                share=share,
-                pinned=False,
-                removed=False,
-                position=position,
-            )
-        )
+        seen.add(offer_id)
+
+        row = by_offer.get(offer_id)
+        if row is None:
+            row = StreamOffer(offer_id=offer_id)
+            stream.offers.append(row)
+
+        row.offer_name = names.get(offer_id) or row.offer_name
+        row.keitaro_link_id = _as_int_or_none(raw.get("id"))
+        row.kt_share = share
+        row.share = share
+        # A fetch is a hard reset: staged pins and removals do not survive it.
+        row.pinned = False
+        row.removed = False
+        row.position = position
+
+    for offer_id, row in by_offer.items():
+        if offer_id not in seen:
+            stream.offers.remove(row)
 
 
 # ---------------------------------------------------------------- staged edits
@@ -137,7 +154,6 @@ async def add_offer(
     names = await offers_service.get_names(session, {offer_id})
     next_position = max((o.position for o in stream.offers), default=-1) + 1
     offer = StreamOffer(
-        stream_id=stream.id,
         offer_id=offer_id,
         offer_name=names.get(offer_id),
         keitaro_link_id=None,
@@ -148,7 +164,6 @@ async def add_offer(
         position=next_position,
     )
     stream.offers.append(offer)
-    session.add(offer)
     apply_rebalance(stream)
     await session.flush()
     return offer
@@ -158,8 +173,8 @@ async def remove_offer(session: AsyncSession, stream: Stream, offer_id: int) -> 
     offer = _find_offer(stream, offer_id)
     if offer.kt_share is None:
         # Never existed in Keitaro — drop it outright, there is nothing to bring back to.
+        # `delete-orphan` turns the detach into a DELETE at flush time.
         stream.offers.remove(offer)
-        await session.delete(offer)
     else:
         offer.removed = True
         offer.pinned = False
@@ -209,7 +224,6 @@ async def reset_campaign(session: AsyncSession, campaign: Campaign) -> None:
         for offer in list(stream.offers):
             if offer.kt_share is None:
                 stream.offers.remove(offer)
-                await session.delete(offer)
             else:
                 offer.share = offer.kt_share
                 offer.removed = False

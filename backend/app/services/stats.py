@@ -89,7 +89,9 @@ async def fetch_campaign_stats(
     we return empty counters flagged `available=False` rather than failing the whole page.
     """
     result = CampaignStats()
-    filters = [{"name": "campaign_id", "operator": "EQUALS", "expression": str(keitaro_campaign_id)}]
+    filters = [
+        {"name": "campaign_id", "operator": "EQUALS", "expression": str(keitaro_campaign_id)}
+    ]
 
     try:
         stream_report = await client.build_report(

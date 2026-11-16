@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Query
+from fastapi.responses import Response
 from sqlalchemy import desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings
 from app.deps import CampaignDep, KeitaroDep, SessionDep, SettingsDep
+from app.keitaro.client import KeitaroClient
 from app.models import Campaign, SyncLog
 from app.schemas import (
     CampaignCreate,
@@ -104,13 +108,34 @@ async def read_campaign(campaign: CampaignDep) -> CampaignOut:
     return CampaignOut.model_validate(campaign)
 
 
-@router.delete("/{campaign_id}", status_code=204)
-async def forget_campaign(campaign: CampaignDep, session: SessionDep) -> None:
+@router.delete("/{campaign_id}", status_code=204, response_class=Response)
+async def forget_campaign(campaign: CampaignDep, session: SessionDep) -> Response:
     """Stop managing a campaign locally. The campaign stays in Keitaro untouched."""
     await session.delete(campaign)
+    return Response(status_code=204)
 
 
 # ---------------------------------------------------------------- part 2: editor
+
+
+async def build_view(
+    campaign: Campaign,
+    session: AsyncSession,
+    client: KeitaroClient,
+    settings: Settings,
+    interval: str = stats_service.DEFAULT_INTERVAL,
+) -> CampaignStreamsOut:
+    """The editor's view of a campaign: staged streams plus click stats per offer.
+
+    Every mutating endpoint returns this so the UI always renders from one authoritative
+    payload instead of patching its own local copy.
+    """
+    resolved_interval = stats_service.normalise_interval(interval)
+    campaign_stats = await stats_service.fetch_campaign_stats(
+        client, campaign.keitaro_id, resolved_interval
+    )
+    await record_calls(session, client, action="read_stats", campaign_id=campaign.id)
+    return _render(campaign, campaign_stats, resolved_interval, settings.keitaro_base_url)
 
 
 @router.get("/{campaign_id}/streams", response_model=CampaignStreamsOut)
@@ -122,12 +147,7 @@ async def read_streams(
     interval: str = Query(default=stats_service.DEFAULT_INTERVAL),
 ) -> CampaignStreamsOut:
     """Current (staged) view of the campaign's streams, with click stats per offer."""
-    resolved_interval = stats_service.normalise_interval(interval)
-    campaign_stats = await stats_service.fetch_campaign_stats(
-        client, campaign.keitaro_id, resolved_interval
-    )
-    await record_calls(session, client, action="read_stats", campaign_id=campaign.id)
-    return _render(campaign, campaign_stats, resolved_interval, settings.keitaro_base_url)
+    return await build_view(campaign, session, client, settings, interval)
 
 
 @router.post("/{campaign_id}/fetch", response_model=CampaignStreamsOut)
@@ -144,7 +164,7 @@ async def fetch_streams(
         await stream_service.sync_streams_from_keitaro(session, client, campaign)
     finally:
         await record_calls(session, client, action="fetch_streams", campaign_id=campaign.id)
-    return await read_streams(campaign, session, client, settings, interval)
+    return await build_view(campaign, session, client, settings, interval)
 
 
 @router.post("/{campaign_id}/streams/{stream_id}/offers", response_model=CampaignStreamsOut)
@@ -159,7 +179,7 @@ async def add_offer(
     stream = await stream_service.get_stream(session, campaign, stream_id)
     await offers_service.ensure_cache(session, client)
     await stream_service.add_offer(session, stream, body.offer_id)
-    return await read_streams(campaign, session, client, settings)
+    return await build_view(campaign, session, client, settings)
 
 
 @router.delete(
@@ -175,7 +195,7 @@ async def remove_offer(
 ) -> CampaignStreamsOut:
     stream = await stream_service.get_stream(session, campaign, stream_id)
     await stream_service.remove_offer(session, stream, offer_id)
-    return await read_streams(campaign, session, client, settings)
+    return await build_view(campaign, session, client, settings)
 
 
 @router.post(
@@ -192,7 +212,7 @@ async def restore_offer(
 ) -> CampaignStreamsOut:
     stream = await stream_service.get_stream(session, campaign, stream_id)
     await stream_service.restore_offer(session, stream, offer_id)
-    return await read_streams(campaign, session, client, settings)
+    return await build_view(campaign, session, client, settings)
 
 
 @router.patch(
@@ -211,7 +231,7 @@ async def patch_offer(
     await stream_service.patch_offer(
         session, stream, offer_id, share=body.share, pinned=body.pinned
     )
-    return await read_streams(campaign, session, client, settings)
+    return await build_view(campaign, session, client, settings)
 
 
 @router.post("/{campaign_id}/push", response_model=PushResult)
@@ -235,7 +255,7 @@ async def reset(
     settings: SettingsDep,
 ) -> CampaignStreamsOut:
     await stream_service.reset_campaign(session, campaign)
-    return await read_streams(campaign, session, client, settings)
+    return await build_view(campaign, session, client, settings)
 
 
 @router.get("/{campaign_id}/logs", response_model=list[SyncLogOut])

@@ -7,8 +7,8 @@ from fastapi import APIRouter
 from app.deps import KeitaroDep, SessionDep, SettingsDep
 from app.schemas import (
     Country,
-    DictionaryDefaults,
     Dictionaries,
+    DictionaryDefaults,
     DomainRef,
     GroupCreate,
     NamedRef,
