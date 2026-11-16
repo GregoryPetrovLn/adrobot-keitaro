@@ -292,3 +292,20 @@ async def test_an_unknown_api_path_is_a_json_404(api):
     response = await api.get("/api/campaignz")
     assert response.status_code == 404
     assert response.headers["content-type"].startswith("application/json")
+
+
+@respx.mock
+async def test_bring_back_leaves_no_pin_behind(api):
+    """After an undo the stream must behave as if the removal never happened."""
+    _routes(respx.mock, offers=[fx.stream_offer(1, 3749, 70), fx.stream_offer(2, 3717, 30)])
+    campaign_id, stream_id = await _setup(api)
+    base = f"/api/campaigns/{campaign_id}/streams/{stream_id}/offers"
+
+    await api.delete(f"{base}/3717")
+    body = (await api.post(f"{base}/3717/restore")).json()
+    stream = next(s for s in body["streams"] if s["accepts_offers"])
+    assert not any(o["pinned"] for o in stream["offers"]), "the temporary pin must be released"
+
+    # And the next add rebalances everything evenly, as it would have before.
+    body = (await api.post(base, json={"offer_id": 11111})).json()
+    assert _shares(body) == {3749: 34, 3717: 33, 11111: 33}

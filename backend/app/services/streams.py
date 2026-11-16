@@ -189,16 +189,19 @@ async def restore_offer(session: AsyncSession, stream: Stream, offer_id: int) ->
     """Bring a staged-for-removal offer back, undoing the removal rather than re-splitting.
 
     Removing an offer hands its traffic to the others, so a naive restore would leave a
-    70/30 stream at 50/50 — a round trip that changes the numbers is not an undo. Restoring
-    the offer's Keitaro share and holding it (pinned) lets the others fall back to exactly
-    what they were, which is what the user expects from "bring back".
+    70/30 stream at 50/50 — a round trip that changes the numbers is not an undo. Pinning
+    the offer's Keitaro share just long enough to rebalance lets the others fall back to
+    exactly what they were. The pin is then released, so the result is indistinguishable
+    from never having removed the offer at all.
     """
     offer = _find_offer(stream, offer_id)
     offer.removed = False
+    was_pinned = offer.pinned
     if offer.kt_share is not None:
         offer.share = offer.kt_share
         offer.pinned = True
     apply_rebalance(stream)
+    offer.pinned = was_pinned
     await session.flush()
     return offer
 
