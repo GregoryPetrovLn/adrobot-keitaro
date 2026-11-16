@@ -132,7 +132,7 @@ cd backend
 source .venv/bin/activate
 pip install -r requirements-dev.txt
 
-pytest              # 78 tests, no network access — Keitaro is mocked with respx
+pytest              # 79 tests, no network access — Keitaro is mocked with respx
 ruff check .        # lint
 ```
 
@@ -159,9 +159,8 @@ Because the campaign is `type: position`, flows are evaluated top-down: Flow 1 c
 chosen country, Flow 2 catches everyone else.
 
 If a flow fails to create, the half-built campaign is deleted again rather than left
-behind for someone to clean up by hand. That cleanup is best-effort: if the delete itself
-fails the original error is still what you get back, and the orphan is recorded in the
-audit log.
+behind for someone to clean up by hand. If that cleanup fails too, the error names the
+campaign id that is still sitting in the tracker so it can be removed by hand.
 
 ### Part 2 — the stream editor
 

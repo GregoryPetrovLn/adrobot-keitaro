@@ -193,3 +193,19 @@ async def test_campaign_policy_follows_configuration(api, monkeypatch):
         assert payload["cookies_ttl"] == 48
     finally:
         get_settings.cache_clear()
+
+
+@respx.mock
+async def test_a_failed_rollback_tells_the_user_about_the_orphan(api):
+    """If cleanup fails too, the empty campaign left behind must be named."""
+    _dictionary_routes(respx.mock)
+    respx.post(f"{KT}/campaigns").mock(return_value=Response(200, json=fx.campaign()))
+    respx.post(f"{KT}/streams").mock(return_value=Response(500, text="boom"))
+    respx.delete(f"{KT}/campaigns/211939").mock(return_value=Response(500, text="boom"))
+
+    response = await api.post(
+        "/api/campaigns", json={"name": "orphan", "geo": "RO", "offer_id": 3749}
+    )
+    assert response.status_code == 502
+    message = response.json()["message"]
+    assert "211939" in message and "left in Keitaro" in message

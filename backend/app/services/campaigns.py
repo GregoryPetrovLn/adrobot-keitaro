@@ -131,9 +131,18 @@ async def create_campaign(
             build_google_stream_payload(keitaro_id, data.geo, settings.google_redirect_url)
         )
         await client.create_stream(build_offers_stream_payload(keitaro_id, data.offer_id))
-    except KeitaroError:
+    except KeitaroError as exc:
         logger.exception("stream creation failed, rolling back campaign %s", keitaro_id)
-        await _rollback_campaign(client, keitaro_id)
+        if not await _rollback_campaign(client, keitaro_id):
+            # The user needs to know an orphan is sitting in their tracker; saying nothing
+            # would leave them to find it by hand.
+            raise KeitaroError(
+                f"{exc.message} — and campaign {keitaro_id} could not be deleted afterwards, "
+                f"so an empty campaign is left in Keitaro. Delete it there.",
+                status_code=exc.keitaro_status,
+                details=exc.details,
+                path=exc.path,
+            ) from exc
         raise
 
     campaign = Campaign(
@@ -242,12 +251,14 @@ async def _resolve_dictionaries(
     }
 
 
-async def _rollback_campaign(client: KeitaroClient, keitaro_id: int) -> None:
+async def _rollback_campaign(client: KeitaroClient, keitaro_id: int) -> bool:
+    """Delete a half-built campaign. Returns False if the tracker refused."""
     try:
         await client.delete_campaign(keitaro_id)
     except KeitaroError:
-        # Best effort: the original failure is the one worth reporting.
         logger.warning("could not roll back campaign %s", keitaro_id)
+        return False
+    return True
 
 
 def _infer_geo(campaign: Campaign) -> str | None:
