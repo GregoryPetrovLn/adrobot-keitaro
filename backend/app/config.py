@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Annotated
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -39,7 +40,10 @@ class Settings(BaseSettings):
     # --- App ---
     database_url: str = "sqlite+aiosqlite:///./adrobot.db"
     log_level: str = "INFO"
-    cors_origins: list[str] = Field(
+    # NoDecode: without it pydantic-settings tries to JSON-decode a list-typed value
+    # straight out of the environment, so the documented comma-separated form in
+    # .env.example fails before the validator below ever sees it.
+    cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
     )
 

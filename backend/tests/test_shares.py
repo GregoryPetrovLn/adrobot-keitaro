@@ -81,3 +81,14 @@ def test_validate_total_rejects_an_overpinned_stream():
 
 def test_validate_total_allows_an_empty_stream():
     validate_total([])
+
+
+def test_cors_origins_parses_the_comma_separated_form_from_dotenv(monkeypatch):
+    """.env.example documents a comma-separated list; it must actually load."""
+    from app.config import Settings
+
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+    assert Settings().cors_origins == ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+    monkeypatch.setenv("CORS_ORIGINS", "https://one.example")
+    assert Settings().cors_origins == ["https://one.example"]
