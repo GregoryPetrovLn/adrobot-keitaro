@@ -1,0 +1,316 @@
+"""Stream editor — part 2 of the task.
+
+Edits are *staged* locally and applied to Keitaro only when the user pushes, mirroring the
+reference tool: add an offer, soft-remove one (with "bring back"), pin a share so it stays
+put, let the rest rebalance, then push or cancel.
+
+The local `StreamOffer` rows hold both sides of that: `kt_share` is what Keitaro last
+reported, `share`/`pinned`/`removed` is what the user currently wants.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.errors import ConflictError, NotFoundError, ValidationError
+from app.keitaro.client import KeitaroClient
+from app.models import Campaign, Stream, StreamOffer, utcnow
+from app.services import offers as offers_service
+from app.services.shares import ShareSlot, rebalance, validate_total
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------- fetch from Keitaro
+
+
+async def sync_streams_from_keitaro(
+    session: AsyncSession, client: KeitaroClient, campaign: Campaign
+) -> None:
+    """Replace the local snapshot with Keitaro's current state.
+
+    This is the "Fetch streams from KT" button: it is a hard reset, so any staged change
+    that was not pushed is discarded. The UI warns before calling it.
+    """
+    remote_streams = await client.list_streams(campaign.keitaro_id)
+    offer_ids = {
+        int(o["offer_id"])
+        for s in remote_streams
+        for o in (s.get("offers") or [])
+        if o.get("offer_id")
+    }
+    names = await offers_service.get_names(session, offer_ids)
+
+    existing = {s.keitaro_id: s for s in campaign.streams}
+    seen: set[int] = set()
+
+    for raw in remote_streams:
+        kt_id = int(raw["id"])
+        seen.add(kt_id)
+        stream = existing.get(kt_id)
+        if stream is None:
+            stream = Stream(campaign_id=campaign.id, keitaro_id=kt_id, name="", schema_type="")
+            session.add(stream)
+            campaign.streams.append(stream)
+
+        stream.name = str(raw.get("name") or f"Stream {kt_id}")
+        stream.schema_type = str(raw.get("schema") or "")
+        stream.action_type = raw.get("action_type")
+        stream.action_payload = raw.get("action_payload")
+        stream.position = int(raw.get("position") or 0)
+        stream.state = str(raw.get("state") or "active")
+        stream.filters = raw.get("filters") or []
+
+        _replace_offers(stream, raw.get("offers") or [], names)
+
+    for kt_id, stream in list(existing.items()):
+        if kt_id not in seen:
+            campaign.streams.remove(stream)
+
+    campaign.streams_fetched_at = utcnow()
+    await session.flush()
+    logger.info("synced %s streams for campaign %s", len(seen), campaign.keitaro_id)
+
+
+def _replace_offers(stream: Stream, raw_offers: list[dict], names: dict[int, str]) -> None:
+    stream.offers.clear()
+    for position, raw in enumerate(raw_offers):
+        offer_id = int(raw["offer_id"])
+        share = int(raw.get("share") or 0)
+        stream.offers.append(
+            StreamOffer(
+                stream_id=stream.id,
+                offer_id=offer_id,
+                offer_name=names.get(offer_id),
+                keitaro_link_id=_as_int_or_none(raw.get("id")),
+                kt_share=share,
+                share=share,
+                pinned=False,
+                removed=False,
+                position=position,
+            )
+        )
+
+
+# ---------------------------------------------------------------- staged edits
+
+
+def active_offers(stream: Stream) -> list[StreamOffer]:
+    return [o for o in sorted(stream.offers, key=lambda o: o.position) if not o.removed]
+
+
+def apply_rebalance(stream: Stream) -> None:
+    """Recompute unpinned shares so the stream's active offers total 100%."""
+    active = active_offers(stream)
+    slots = [ShareSlot(key=str(o.offer_id), share=o.share, pinned=o.pinned) for o in active]
+    rebalance(slots)
+    for offer, slot in zip(active, slots, strict=True):
+        offer.share = slot.share
+    for offer in stream.offers:
+        if offer.removed:
+            offer.share = 0
+
+
+async def add_offer(
+    session: AsyncSession, stream: Stream, offer_id: int
+) -> StreamOffer:
+    existing = next((o for o in stream.offers if o.offer_id == offer_id), None)
+    if existing is not None:
+        if existing.removed:
+            # Re-adding something staged for removal is just "bring back".
+            existing.removed = False
+            existing.pinned = False
+            apply_rebalance(stream)
+            await session.flush()
+            return existing
+        raise ConflictError(f"Offer {offer_id} is already attached to stream '{stream.name}'.")
+
+    if not stream.accepts_offers:
+        raise ValidationError(
+            f"Stream '{stream.name}' is a '{stream.schema_type}' stream and cannot hold offers. "
+            "Only streams with schema 'landings' accept offers."
+        )
+
+    names = await offers_service.get_names(session, {offer_id})
+    next_position = max((o.position for o in stream.offers), default=-1) + 1
+    offer = StreamOffer(
+        stream_id=stream.id,
+        offer_id=offer_id,
+        offer_name=names.get(offer_id),
+        keitaro_link_id=None,
+        kt_share=None,
+        share=0,
+        pinned=False,
+        removed=False,
+        position=next_position,
+    )
+    stream.offers.append(offer)
+    session.add(offer)
+    apply_rebalance(stream)
+    await session.flush()
+    return offer
+
+
+async def remove_offer(session: AsyncSession, stream: Stream, offer_id: int) -> None:
+    offer = _find_offer(stream, offer_id)
+    if offer.kt_share is None:
+        # Never existed in Keitaro — drop it outright, there is nothing to bring back to.
+        stream.offers.remove(offer)
+        await session.delete(offer)
+    else:
+        offer.removed = True
+        offer.pinned = False
+        offer.share = 0
+    apply_rebalance(stream)
+    await session.flush()
+
+
+async def restore_offer(session: AsyncSession, stream: Stream, offer_id: int) -> StreamOffer:
+    offer = _find_offer(stream, offer_id)
+    offer.removed = False
+    apply_rebalance(stream)
+    await session.flush()
+    return offer
+
+
+async def patch_offer(
+    session: AsyncSession,
+    stream: Stream,
+    offer_id: int,
+    *,
+    share: int | None,
+    pinned: bool | None,
+) -> StreamOffer:
+    offer = _find_offer(stream, offer_id)
+    if offer.removed:
+        raise ValidationError(
+            f"Offer {offer_id} is staged for removal. Bring it back before editing its share."
+        )
+
+    if pinned is not None:
+        offer.pinned = pinned
+    if share is not None:
+        offer.share = share
+        # Typing a share is an explicit intent to hold it, so pin it unless told otherwise.
+        if pinned is None:
+            offer.pinned = True
+
+    apply_rebalance(stream)
+    await session.flush()
+    return offer
+
+
+async def reset_campaign(session: AsyncSession, campaign: Campaign) -> None:
+    """Discard every staged change, returning to the last state fetched from Keitaro."""
+    for stream in campaign.streams:
+        for offer in list(stream.offers):
+            if offer.kt_share is None:
+                stream.offers.remove(offer)
+                await session.delete(offer)
+            else:
+                offer.share = offer.kt_share
+                offer.removed = False
+                offer.pinned = False
+    await session.flush()
+
+
+def has_pending_changes(campaign: Campaign) -> bool:
+    return any(o.is_dirty for s in campaign.streams for o in s.offers)
+
+
+def dirty_streams(campaign: Campaign) -> list[Stream]:
+    return [s for s in campaign.streams if any(o.is_dirty for o in s.offers)]
+
+
+# ---------------------------------------------------------------- push to Keitaro
+
+
+async def push_campaign(
+    session: AsyncSession, client: KeitaroClient, campaign: Campaign
+) -> list[str]:
+    """Apply staged changes with one `PUT /streams/{id}` per modified stream.
+
+    The offers array Keitaro accepts is declarative, so a single call per stream covers
+    additions, removals and re-weighting at once.
+    """
+    changed = dirty_streams(campaign)
+    if not changed:
+        return []
+
+    for stream in changed:
+        active = active_offers(stream)
+        slots = [ShareSlot(key=str(o.offer_id), share=o.share, pinned=o.pinned) for o in active]
+        validate_total(slots)
+
+    applied: list[str] = []
+    for stream in changed:
+        active = active_offers(stream)
+        payload = [{"offer_id": o.offer_id, "share": o.share} for o in active]
+        response = await client.set_stream_offers(stream.keitaro_id, payload)
+        applied.append(_describe_change(stream))
+        _absorb_response(stream, response)
+
+    campaign.streams_fetched_at = utcnow()
+    await session.flush()
+    logger.info("pushed %s streams for campaign %s", len(changed), campaign.keitaro_id)
+    return applied
+
+
+def _describe_change(stream: Stream) -> str:
+    added = [o.offer_id for o in stream.offers if o.status == "added"]
+    removed = [o.offer_id for o in stream.offers if o.status == "removed"]
+    changed = [o.offer_id for o in stream.offers if o.status == "changed"]
+    parts = [f"stream '{stream.name}'"]
+    if added:
+        parts.append(f"+{len(added)} offer(s) {added}")
+    if removed:
+        parts.append(f"-{len(removed)} offer(s) {removed}")
+    if changed:
+        parts.append(f"~{len(changed)} share(s) {changed}")
+    return ": ".join([parts[0], ", ".join(parts[1:])]) if len(parts) > 1 else parts[0]
+
+
+def _absorb_response(stream: Stream, response: dict) -> None:
+    """Adopt Keitaro's post-write state as the new baseline."""
+    remote = {int(o["offer_id"]): o for o in (response.get("offers") or [])}
+
+    for offer in list(stream.offers):
+        raw = remote.get(offer.offer_id)
+        if raw is None:
+            stream.offers.remove(offer)
+            continue
+        share = int(raw.get("share") or 0)
+        offer.kt_share = share
+        offer.share = share
+        offer.removed = False
+        offer.pinned = False
+        offer.keitaro_link_id = _as_int_or_none(raw.get("id"))
+
+    for position, offer in enumerate(sorted(stream.offers, key=lambda o: o.position)):
+        offer.position = position
+
+
+def _find_offer(stream: Stream, offer_id: int) -> StreamOffer:
+    offer = next((o for o in stream.offers if o.offer_id == offer_id), None)
+    if offer is None:
+        raise NotFoundError(f"Offer {offer_id} is not attached to stream '{stream.name}'.")
+    return offer
+
+
+async def get_stream(session: AsyncSession, campaign: Campaign, stream_id: str) -> Stream:
+    stream = await session.scalar(
+        select(Stream).where(Stream.id == stream_id, Stream.campaign_id == campaign.id)
+    )
+    if stream is None:
+        raise NotFoundError(f"Stream {stream_id} does not belong to this campaign.")
+    return stream
+
+
+def _as_int_or_none(value: object) -> int | None:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
