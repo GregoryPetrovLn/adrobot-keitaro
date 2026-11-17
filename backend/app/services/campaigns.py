@@ -162,7 +162,8 @@ async def create_campaign(
     session.add(campaign)
     await session.flush()
 
-    await sync_streams_from_keitaro(session, client, campaign)
+    # The campaign was created moments ago; no need to confirm it exists.
+    await sync_streams_from_keitaro(session, client, campaign, verify_exists=False)
     campaign.streams_fetched_at = utcnow()
     return campaign
 
@@ -200,7 +201,8 @@ async def import_campaign(
     session.add(campaign)
     await session.flush()
 
-    await sync_streams_from_keitaro(session, client, campaign)
+    # `get_campaign` above already proved it exists.
+    await sync_streams_from_keitaro(session, client, campaign, verify_exists=False)
     campaign.streams_fetched_at = utcnow()
     campaign.geo = _infer_geo(campaign)
     return campaign

@@ -15,7 +15,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.errors import ConflictError, NotFoundError, ValidationError
+from app.errors import ConflictError, KeitaroError, NotFoundError, ValidationError
 from app.keitaro.client import KeitaroClient
 from app.models import Campaign, Stream, StreamOffer, utcnow
 from app.services import offers as offers_service
@@ -29,7 +29,11 @@ logger = logging.getLogger(__name__)
 
 
 async def sync_streams_from_keitaro(
-    session: AsyncSession, client: KeitaroClient, campaign: Campaign
+    session: AsyncSession,
+    client: KeitaroClient,
+    campaign: Campaign,
+    *,
+    verify_exists: bool = True,
 ) -> None:
     """Replace the local snapshot with Keitaro's current state.
 
@@ -40,6 +44,8 @@ async def sync_streams_from_keitaro(
     # collection is explicitly (re)loaded here.
     await session.refresh(campaign, attribute_names=["streams"])
 
+    if verify_exists:
+        await _assert_campaign_exists(client, campaign)
     remote_streams = await client.list_streams(campaign.keitaro_id)
     offer_ids = {
         int(o["offer_id"])
@@ -276,6 +282,7 @@ async def push_campaign(
         slots = [ShareSlot(key=str(o.offer_id), share=o.share, pinned=o.pinned) for o in active]
         validate_total(slots)
 
+    await _assert_campaign_exists(client, campaign)
     remote_streams = {int(s["id"]): s for s in await client.list_streams(campaign.keitaro_id)}
     for stream in changed:
         _assert_not_stale(stream, remote_streams.get(stream.keitaro_id))
@@ -300,6 +307,25 @@ async def push_campaign(
     await session.flush()
     logger.info("pushed %s streams for campaign %s", len(changed), campaign.keitaro_id)
     return applied
+
+
+async def _assert_campaign_exists(client: KeitaroClient, campaign: Campaign) -> None:
+    """Fail loudly if the campaign was deleted in Keitaro.
+
+    Deleting a campaign there orphans its streams rather than removing them: they stay
+    readable *and* writable, so a push would report success while writing into a campaign
+    that no longer exists.
+    """
+    try:
+        await client.get_campaign(campaign.keitaro_id)
+    except KeitaroError as exc:
+        if exc.keitaro_status == 404:
+            raise ConflictError(
+                f"Campaign {campaign.keitaro_id} no longer exists in Keitaro — it was "
+                "deleted there. Use 'Forget' to drop it from this list.",
+                details={"keitaro_id": campaign.keitaro_id},
+            ) from exc
+        raise
 
 
 def _assert_not_stale(stream: Stream, remote: dict | None) -> None:

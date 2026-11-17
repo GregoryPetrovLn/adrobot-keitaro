@@ -111,7 +111,8 @@ async def test_failed_stream_creation_rolls_the_campaign_back(api):
     response = await api.post(
         "/api/campaigns", json={"name": "doomed", "geo": "RO", "offer_id": 3749}
     )
-    assert response.status_code == 502
+    # Keitaro rejected the payload, so this is the caller's problem, not a gateway failure.
+    assert response.status_code == 422
     assert deleted.called
 
     # Nothing was persisted locally either.
@@ -206,7 +207,7 @@ async def test_a_failed_rollback_tells_the_user_about_the_orphan(api):
     response = await api.post(
         "/api/campaigns", json={"name": "orphan", "geo": "RO", "offer_id": 3749}
     )
-    assert response.status_code == 502
+    assert response.status_code == 502  # Keitaro 500 stays a gateway error
     message = response.json()["message"]
     assert "211939" in message and "left in Keitaro" in message
 

@@ -347,3 +347,57 @@ async def test_a_fetch_racing_an_edit_leaves_a_consistent_stream(api):
     )
     body = (await api.get(f"/api/campaigns/{campaign_id}/streams")).json()
     assert _total(body) == 100
+
+
+@respx.mock
+async def test_a_rejection_keitaro_blames_on_the_request_is_a_client_error(api):
+    """A duplicate campaign name is the caller's problem, not a bad gateway."""
+    respx.mock.get(f"{KT}/groups").mock(return_value=Response(200, json=fx.GROUPS))
+    respx.mock.get(f"{KT}/traffic_sources").mock(return_value=Response(200, json=fx.SOURCES))
+    respx.mock.get(f"{KT}/domains").mock(return_value=Response(200, json=fx.DOMAINS))
+    respx.mock.get(f"{KT}/offers").mock(return_value=Response(200, json=fx.OFFERS))
+    respx.post(f"{KT}/campaigns").mock(
+        return_value=Response(422, json={"name": ["Name has already used"]})
+    )
+
+    response = await api.post(
+        "/api/campaigns", json={"name": "taken", "geo": "RO", "offer_id": 3749}
+    )
+    assert response.status_code == 422
+    assert "Name has already used" in response.json()["message"]
+
+
+@respx.mock
+async def test_keitaro_being_down_is_still_a_gateway_error(api):
+    respx.mock.get(f"{KT}/groups").mock(return_value=Response(200, json=fx.GROUPS))
+    respx.mock.get(f"{KT}/traffic_sources").mock(return_value=Response(200, json=fx.SOURCES))
+    respx.mock.get(f"{KT}/domains").mock(return_value=Response(200, json=fx.DOMAINS))
+    respx.mock.get(f"{KT}/offers").mock(return_value=Response(200, json=fx.OFFERS))
+    respx.post(f"{KT}/campaigns").mock(return_value=Response(503, text="maintenance"))
+
+    response = await api.post(
+        "/api/campaigns", json={"name": "x", "geo": "RO", "offer_id": 3749}
+    )
+    assert response.status_code == 502
+
+
+@respx.mock
+async def test_pushing_a_campaign_deleted_in_keitaro_is_refused(api):
+    """Deleting a campaign there orphans its streams, which stay readable and writable."""
+    _routes(respx.mock)
+    campaign_id, stream_id = await _setup(api)
+    await api.post(
+        f"/api/campaigns/{campaign_id}/streams/{stream_id}/offers", json={"offer_id": 3717}
+    )
+
+    # The campaign is gone, but its streams still answer — exactly what Keitaro does.
+    respx.mock.get(f"{KT}/campaigns/211939").mock(return_value=Response(404, text="Not Found"))
+    put = respx.put(f"{KT}/streams/1310640")
+
+    response = await api.post(f"/api/campaigns/{campaign_id}/push")
+    assert response.status_code == 409
+    assert "no longer exists in Keitaro" in response.json()["message"]
+    assert not put.called, "nothing may be written into a campaign that no longer exists"
+
+    fetched = await api.post(f"/api/campaigns/{campaign_id}/fetch")
+    assert fetched.status_code == 409

@@ -132,7 +132,7 @@ cd backend
 source .venv/bin/activate
 pip install -r requirements-dev.txt
 
-pytest              # 99 tests, no network access — Keitaro is mocked with respx
+pytest              # 102 tests, no network access — Keitaro is mocked with respx
 ruff check .        # lint
 ```
 
@@ -249,6 +249,11 @@ suggests, and the client (`backend/app/keitaro/client.py`) documents each one in
   `{"field": ["message"]}`. Both are normalised into one error type.
 - An API key may be able to attach an offer it cannot see in `GET /offers`; the catalogue
   endpoint is permission-scoped while the stream write is not.
+- Campaign names must be unique; a clash comes back as HTTP 422, which this app passes
+  through as a 422 rather than dressing it up as a gateway error.
+- Deleting a campaign **orphans its streams** instead of removing them: they stay readable
+  *and* writable afterwards, so a push would otherwise report success while writing into a
+  campaign that no longer exists. Push and fetch check the campaign itself for this.
 
 ---
 

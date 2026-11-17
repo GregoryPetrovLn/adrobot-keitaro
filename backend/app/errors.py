@@ -30,6 +30,12 @@ class ValidationError(AppError):
     code = "validation_error"
 
 
+# A rejection Keitaro attributes to the request is the caller's to fix, so it is passed
+# through as a client error. Anything else (5xx, timeouts, unreachable) is a gateway
+# problem and stays a 502.
+_PASS_THROUGH_STATUSES = {400: 422, 404: 404, 409: 409, 422: 422}
+
+
 class KeitaroError(AppError):
     """Keitaro rejected the call or could not be reached."""
 
@@ -47,6 +53,9 @@ class KeitaroError(AppError):
         super().__init__(message, details=details)
         self.keitaro_status = status_code
         self.path = path
+        if status_code in _PASS_THROUGH_STATUSES:
+            self.status_code = _PASS_THROUGH_STATUSES[status_code]
+            self.code = "keitaro_rejected"
 
 
 class KeitaroNotConfiguredError(AppError):
