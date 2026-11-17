@@ -1,133 +1,135 @@
-# AdRobot — Keitaro campaign creator & stream editor
+# AdRobot — создаватор кампаний и редактор потоков Keitaro
 
-A small FastAPI + SQLAlchemy service with a React frontend that drives the
-[Keitaro](https://keitaro.io) tracker's admin API.
+*[Read this in English](README.en.md)*
 
-It does two things:
+Небольшой сервис на FastAPI + SQLAlchemy с фронтендом на React, который работает
+с admin API трекера [Keitaro](https://keitaro.io).
 
-1. **Creates campaigns.** Give it a name, a country and an offer; it builds a Keitaro
-   campaign with a configured domain, group and traffic source, and two flows —
-   *Flow 1* sends everyone from that country to Google, *Flow 2* sends everyone else to
-   the chosen offer.
-2. **Edits the offers of an existing campaign.** Add and remove offers, re-weight their
-   traffic shares, and push the result back to Keitaro.
+Умеет две вещи:
+
+1. **Создавать кампании.** Принимает название, гео-код страны и оффер — и собирает
+   в Keitaro кампанию с настроенными доменом, группой и источником и двумя потоками:
+   *Flow 1* ловит всех из указанной страны и редиректит на Google, *Flow 2* отправляет
+   всех остальных на выбранный оффер.
+2. **Редактировать офферы существующей кампании.** Добавлять и удалять офферы, менять
+   их доли трафика и отправлять результат обратно в Keitaro.
 
 <p align="center">
-  <img src="docs/creator.png" alt="Campaign creator: name, geo, offer autocomplete, group, source and domain" width="420">
-  <img src="docs/editor.png" alt="Stream editor with staged changes: added, removed and re-weighted offers awaiting a push" width="420">
+  <img src="docs/creator.png" alt="Создаватор кампаний: название, гео, автокомплит по офферам, группа, источник и домен" width="420">
+  <img src="docs/editor.png" alt="Редактор потоков с незапушенными правками: добавленный, удалённый и перевзвешенный офферы" width="420">
 </p>
 <p align="center">
-  <sub><b>Left:</b> the creator — name, geo and an offer search over the cached Keitaro catalogue.&nbsp;
-  <b>Right:</b> the editor — one offer added, one staged for removal, one share pinned at 45%,
-  all held locally until <i>Push to KT</i>.</sub>
+  <sub><b>Слева:</b> создаватор — название, гео и поиск по закэшированному каталогу офферов Keitaro.&nbsp;
+  <b>Справа:</b> редактор — один оффер добавлен, один помечен к удалению, у одного доля
+  закреплена на 45%; всё хранится локально до нажатия <i>Push to KT</i>.</sub>
 </p>
 
 ---
 
-## Quick start
+## Быстрый старт
 
-Requirements: **Python 3.11+** and **Node 18+**. PostgreSQL is optional — the default
-database is SQLite and needs no setup.
+Требуется **Python 3.11+** и **Node 18+**. PostgreSQL не обязателен — по умолчанию
+используется SQLite, его настраивать не нужно.
 
 ```bash
 git clone https://github.com/GregoryPetrovLn/adrobot-keitaro.git
 cd adrobot-keitaro
 
-# 1. Configuration
+# 1. Конфигурация
 cp .env.example .env
-#    then set KEITARO_BASE_URL and KEITARO_API_KEY (see "Configuration" below)
+#    затем укажите KEITARO_BASE_URL и KEITARO_API_KEY (см. раздел «Настройки»)
 
-# 2. Backend
+# 2. Бэкенд
 cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-alembic upgrade head                       # create the database schema
+alembic upgrade head                       # создать схему БД
 
-# 3. Frontend (builds into backend/app/static, which FastAPI serves)
+# 3. Фронтенд (собирается в backend/app/static, откуда его раздаёт FastAPI)
 cd ../frontend
 npm install
 npm run build
 
-# 4. Run
+# 4. Запуск
 cd ../backend
 uvicorn app.main:app --reload
 ```
 
-Open **http://127.0.0.1:8000**. The API docs are at **/docs**.
+Откройте **http://127.0.0.1:8000**. Документация API — на **/docs**.
 
-### Development mode (hot reload)
+### Режим разработки (hot reload)
 
-Run the two halves separately. Vite proxies `/api` to the backend, so the frontend does
-not need rebuilding on every change.
+Две половины запускаются отдельно. Vite проксирует `/api` на бэкенд, так что
+пересобирать фронтенд на каждое изменение не нужно.
 
 ```bash
-# terminal 1
+# терминал 1
 cd backend && source .venv/bin/activate && uvicorn app.main:app --reload   # :8000
 
-# terminal 2
+# терминал 2
 cd frontend && npm run dev                                                # :5173
 ```
 
-Then open **http://127.0.0.1:5173**.
+Затем откройте **http://127.0.0.1:5173**.
 
 ---
 
-## Configuration
+## Настройки
 
-All settings are read from `.env` in the repository root (see `.env.example`).
+Все параметры читаются из `.env` в корне репозитория (шаблон — `.env.example`).
 
-| Variable | Required | Default | What it does |
+| Переменная | Обязательна | По умолчанию | Назначение |
 | --- | --- | --- | --- |
-| `KEITARO_BASE_URL` | yes | `https://in.posdk.xyz` | Tracker root. The admin API is expected at `<base>/admin_api/v1`. |
-| `KEITARO_API_KEY` | yes | — | Keitaro admin → **Профиль → API ключи**. |
-| `KEITARO_TIMEOUT` | no | `30.0` | Per-request timeout, seconds. |
-| `DATABASE_URL` | no | `sqlite+aiosqlite:///./adrobot.db` | Async SQLAlchemy URL. Postgres: `postgresql+asyncpg://user:pass@host:5432/db`. |
-| `DEFAULT_GROUP_ID` | no | — | Pre-selects a campaign group in the form. |
-| `DEFAULT_TRAFFIC_SOURCE_ID` | no | — | Pre-selects a traffic source. |
-| `DEFAULT_DOMAIN_ID` | no | — | Pre-selects a domain. |
-| `CAMPAIGN_NAME_PREFIX` | no | *(empty)* | Prepended to every campaign name created here — handy on a shared tracker. |
-| `GOOGLE_REDIRECT_URL` | no | `https://www.google.com` | Where Flow 1 sends matching traffic. |
-| `CAMPAIGN_COST_TYPE` | no | `CPC` | Cost model for created campaigns. |
-| `CAMPAIGN_COST_CURRENCY` | no | `USD` | Cost currency. |
-| `CAMPAIGN_COST_AUTO` | no | `true` | Keitaro's "Из параметра `cost`" — read the cost off each click. |
-| `CAMPAIGN_UNIQUENESS_METHOD` | no | `ip_ua` | `ip_ua` or `ip`. |
-| `CAMPAIGN_COOKIES_TTL` | no | `24` | Uniqueness window, hours. |
-| `CORS_ORIGINS` | no | `http://localhost:5173,…` | Comma-separated origins allowed in dev mode. |
-| `LOG_LEVEL` | no | `INFO` | Standard Python log level. |
+| `KEITARO_BASE_URL` | да | `https://in.posdk.xyz` | Корень трекера. Admin API ожидается по адресу `<base>/admin_api/v1`. |
+| `KEITARO_API_KEY` | да | — | Админка Keitaro → **Профиль → API ключи**. |
+| `KEITARO_TIMEOUT` | нет | `30.0` | Таймаут одного запроса, секунды. |
+| `DATABASE_URL` | нет | `sqlite+aiosqlite:///./adrobot.db` | Async-URL для SQLAlchemy. Postgres: `postgresql+asyncpg://user:pass@host:5432/db`. |
+| `DEFAULT_GROUP_ID` | нет | — | Предвыбранная группа кампаний в форме. |
+| `DEFAULT_TRAFFIC_SOURCE_ID` | нет | — | Предвыбранный источник трафика. |
+| `DEFAULT_DOMAIN_ID` | нет | — | Предвыбранный домен. |
+| `CAMPAIGN_NAME_PREFIX` | нет | *(пусто)* | Префикс к названию каждой создаваемой кампании — удобно на общем трекере. |
+| `GOOGLE_REDIRECT_URL` | нет | `https://www.google.com` | Куда Flow 1 отправляет подходящий трафик. |
+| `CAMPAIGN_COST_TYPE` | нет | `CPC` | Модель затрат создаваемых кампаний. |
+| `CAMPAIGN_COST_CURRENCY` | нет | `USD` | Валюта затрат. |
+| `CAMPAIGN_COST_AUTO` | нет | `true` | Галка «Из параметра `cost`» — брать стоимость из параметра клика. |
+| `CAMPAIGN_UNIQUENESS_METHOD` | нет | `ip_ua` | `ip_ua` или `ip`. |
+| `CAMPAIGN_COOKIES_TTL` | нет | `24` | Срок уникальности, часы. |
+| `CORS_ORIGINS` | нет | `http://localhost:5173,…` | Origins через запятую, разрешённые в dev-режиме. |
+| `LOG_LEVEL` | нет | `INFO` | Обычный уровень логирования Python. |
 
-The group, traffic source and domain dropdowns are populated live from Keitaro, so the
-`DEFAULT_*` values are conveniences, not requirements.
+Списки групп, источников и доменов подтягиваются из Keitaro на лету, так что
+`DEFAULT_*` — это удобство, а не обязательное условие.
 
 ---
 
-## Migrations
+## Миграции
 
-Alembic owns the schema; the app never calls `create_all`.
+Схемой владеет Alembic; приложение никогда не вызывает `create_all`.
 
 ```bash
 cd backend
 source .venv/bin/activate
 
-alembic upgrade head          # apply all migrations (run this first)
-alembic downgrade -1          # roll back one
-alembic current               # show the applied revision
-alembic history --verbose     # list revisions
+alembic upgrade head          # применить все миграции (это нужно сделать первым делом)
+alembic downgrade -1          # откатить одну
+alembic current               # показать текущую ревизию
+alembic history --verbose     # список ревизий
 
-# after changing app/models.py:
-alembic revision --autogenerate -m "describe the change"
+# после изменения app/models.py:
+alembic revision --autogenerate -m "описание изменения"
 ```
 
-Migrations run against whatever `DATABASE_URL` points at, so the same commands work for
-SQLite and PostgreSQL. They are generated with `render_as_batch=True`, which lets SQLite
-handle `ALTER TABLE` the way PostgreSQL does.
+Миграции выполняются против того, на что указывает `DATABASE_URL`, поэтому одни и те же
+команды работают и для SQLite, и для PostgreSQL. Они генерируются с `render_as_batch=True`
+— это позволяет SQLite обрабатывать `ALTER TABLE` так же, как это делает PostgreSQL.
 
-### PostgreSQL instead of SQLite
+### PostgreSQL вместо SQLite
 
 ```bash
 docker run -d --name adrobot-pg -p 5432:5432 \
   -e POSTGRES_USER=adrobot -e POSTGRES_PASSWORD=adrobot -e POSTGRES_DB=adrobot postgres:16
 
-# in .env
+# в .env
 DATABASE_URL=postgresql+asyncpg://adrobot:adrobot@localhost:5432/adrobot
 
 cd backend && alembic upgrade head
@@ -135,201 +137,206 @@ cd backend && alembic upgrade head
 
 ---
 
-## Tests
+## Тесты
 
 ```bash
 cd backend
 source .venv/bin/activate
 pip install -r requirements-dev.txt
 
-pytest              # 102 tests, no network access — Keitaro is mocked with respx
-ruff check .        # lint
+pytest              # 102 теста, без сети — Keitaro замокан через respx
+ruff check .        # линтер
 ```
 
-The suite covers the exact payloads sent to Keitaro, the share arithmetic, the staging
-lifecycle (add / remove / bring back / push / cancel), rollback when campaign creation
-fails halfway, stats mapping, the audit log, and `tests/test_resilience.py` — stale-push
-conflicts, concurrent edits, malformed tracker responses and failed-call auditing.
+Тесты покрывают точные payload'ы, уходящие в Keitaro, арифметику долей, весь цикл
+стейджинга (добавить / удалить / вернуть / запушить / отменить), откат при падении
+создания кампании на полпути, маппинг статистики, аудит-лог, а в
+`tests/test_resilience.py` — конфликты при устаревшем снимке, конкурентные правки,
+некорректные ответы трекера и логирование упавших вызовов.
 
 ---
 
-## How it works
+## Как это устроено
 
-### Part 1 — the campaign creator
+### Часть 1 — создаватор кампаний
 
-One request creates three objects in Keitaro:
+Один запрос создаёт в Keitaro три объекта:
 
-| | Keitaro call | What it sends |
+| | Вызов Keitaro | Что отправляется |
 | --- | --- | --- |
-| Campaign | `POST /campaigns` | `type: position`, `cost_type: CPC` with `cost_auto` (Keitaro reads the real cost from each click's `cost` parameter), plus the chosen `group_id`, `traffic_source_id` and `domain_id`. Cost model, currency and uniqueness are `CAMPAIGN_*` settings. |
-| Flow 1 | `POST /streams` | `schema: redirect` → `https://www.google.com`, filter `country accept [GEO]`, position 1 |
-| Flow 2 | `POST /streams` | `schema: landings` with the chosen offer at 100%, position 2 |
+| Кампания | `POST /campaigns` | `type: position`, `cost_type: CPC` с `cost_auto` (Keitaro берёт реальную стоимость из параметра `cost` каждого клика), плюс выбранные `group_id`, `traffic_source_id` и `domain_id`. Модель затрат, валюта и уникальность задаются настройками `CAMPAIGN_*`. |
+| Flow 1 | `POST /streams` | `schema: redirect` → `https://www.google.com`, фильтр `country accept [GEO]`, позиция 1 |
+| Flow 2 | `POST /streams` | `schema: landings` с выбранным оффером на 100%, позиция 2 |
 
-Because the campaign is `type: position`, flows are evaluated top-down: Flow 1 catches the
-chosen country, Flow 2 catches everyone else.
+Поскольку у кампании `type: position`, потоки проверяются сверху вниз: Flow 1 ловит
+указанную страну, Flow 2 — всех остальных.
 
-If a flow fails to create, the half-built campaign is deleted again rather than left
-behind for someone to clean up by hand. If that cleanup fails too, the error names the
-campaign id that is still sitting in the tracker so it can be removed by hand.
+Если создание потока падает, недособранная кампания удаляется, а не остаётся висеть,
+чтобы её кто-то вычищал руками. Если и удаление не удалось, в тексте ошибки будет id
+кампании, которая осталась в трекере, — чтобы её можно было убрать вручную.
 
-### Part 2 — the stream editor
+### Часть 2 — редактор потоков
 
-Edits are **staged locally** and only reach Keitaro when you press **Push to KT**:
+Правки **копятся локально** и уходят в Keitaro только по кнопке **Push to KT**:
 
-- **Add** an offer — it appears immediately, marked `added`.
-- **Remove** an offer — it is greyed out and marked `removed`, with **Bring back** to undo.
-  An offer that was never in Keitaro is dropped outright instead, since there is nothing
-  to bring back to.
-- **Shares.** Unpinned offers split the remaining percentage evenly; the leftover points
-  from integer division go to the earliest offers. Three offers become `34 / 33 / 33`;
-  dropping one of four while a 25% offer is pinned leaves `38 / 37 / 25`. Note this is an
-  even split, not a proportional one — adding an offer to a 70/30 stream gives
-  `34 / 33 / 33`, and **pinning (📌) is how you hold a share you do not want
-  redistributed**. Typing a share pins it automatically.
-- Edits are serialised per campaign, so two tabs cannot each rebalance a stale copy. That
-  lock is process-local, which covers the single-process deployment above; behind several
-  workers the push-time check is the backstop. Either way, if pins are set such that the
-  total cannot reach 100%, the stream header says so and the push is refused rather than
-  sending bad weights to the tracker.
-- **Push to KT** sends one `PUT /streams/{id}` per changed stream and adopts Keitaro's
-  response as the new baseline. Because that `PUT` replaces the offer list wholesale, each
-  stream is re-read first: if anyone changed it in Keitaro since your last fetch the push
-  is refused with a 409 instead of silently overwriting their work.
-- **Cancel** throws the staged changes away; **Fetch streams from KT** re-reads the
-  tracker (and warns first, because it discards staged changes too).
+- **Добавление** оффера — появляется сразу, с меткой `added`.
+- **Удаление** — строка гаснет и помечается `removed`, рядом кнопка **Bring back** для
+  отмены. Оффер, которого в Keitaro ещё не было, удаляется сразу: возвращать его не к чему.
+- **Доли.** Незакреплённые офферы делят остаток поровну; «лишние» проценты от целочисленного
+  деления достаются первым в списке. Три оффера дают `34 / 33 / 33`; если удалить один
+  из четырёх, когда оффер на 25% закреплён, получится `38 / 37 / 25`. Обратите внимание:
+  это равное деление, а не пропорциональное — добавление оффера в поток 70/30 даст
+  `34 / 33 / 33`, и **закрепление (📌) — это способ удержать долю, которую вы не хотите
+  пересчитывать**. Введённая вручную доля закрепляется автоматически.
+- Правки сериализуются по кампании, поэтому две вкладки не могут одновременно пересчитать
+  устаревшую копию. Блокировка живёт в пределах процесса, чего достаточно для
+  однопроцессного запуска выше; при нескольких воркерах подстраховкой служит проверка в
+  момент пуша. В любом случае, если закрепления выставлены так, что сумма не может быть
+  равна 100%, в заголовке потока об этом написано, а пуш отклоняется вместо отправки
+  некорректных весов в трекер.
+- **Push to KT** отправляет по одному `PUT /streams/{id}` на каждый изменённый поток и
+  принимает ответ Keitaro за новый базовый снимок. Так как этот `PUT` заменяет список
+  офферов целиком, каждый поток сначала перечитывается: если кто-то поменял его в Keitaro
+  после вашей последней загрузки, пуш отклоняется с 409, а не затирает чужую работу молча.
+- **Cancel** выбрасывает накопленные правки; **Fetch streams from KT** перечитывает трекер
+  (и сначала предупреждает, потому что тоже сбрасывает незапушенное).
 
-Each offer row shows clicks, uniques, bots, conversions and revenue for the selected
-period, read from `POST /report/build` grouped by `stream_id` + `offer_id`. Those numbers
-are cached for 20 seconds per campaign and period: every editing call returns the whole
-view, and retyping a few shares should not mean a report build per keystroke on Keitaro's
-heaviest endpoint. "Fetch streams from KT" bypasses the cache.
+В строке каждого оффера видны клики, уники, боты, конверсии и доход за выбранный период —
+из `POST /report/build` с группировкой по `stream_id` + `offer_id`. Эти цифры кэшируются
+на 20 секунд по паре «кампания + период»: каждый вызов редактирования возвращает всю
+картину целиком, и правка нескольких долей не должна означать по сборке отчёта на каждое
+нажатие на самом тяжёлом эндпоинте Keitaro. «Fetch streams from KT» кэш игнорирует.
 
-### Why there is a database at all
+### Зачем здесь вообще база
 
-The local schema is a staging area in front of Keitaro, not a second source of truth:
+Локальная схема — это буфер перед Keitaro, а не второй источник истины:
 
-- `campaigns` / `streams` / `stream_offers` — the last state read from Keitaro **plus** the
-  pending edits layered on top. `stream_offers.kt_share` is what the tracker reported;
-  `share`, `pinned` and `removed` are what you currently want. The difference is what
-  "unsaved changes" means.
-- `offers` — a cache of the tracker's offer catalogue. `GET /admin_api/v1/offers` ignores
-  `name` and `limit` and returns the entire list every time, so the autocomplete searches
-  the local copy instead of re-downloading it on each keystroke.
-- `sync_logs` — every outbound Keitaro call with its payload, status and duration, exposed
-  at `GET /api/campaigns/{id}/logs`. Rows are buffered during the request and written once
-  its transaction has committed *or rolled back*, so a failed call is still recorded — a
-  log that vanishes exactly when something breaks would be worse than none. (Writing them
-  on a second connection instead deadlocks against the request's own open transaction on
-  SQLite, which is how they were being lost before.)
+- `campaigns` / `streams` / `stream_offers` — последнее состояние, прочитанное из Keitaro,
+  **плюс** наложенные сверху незапушенные правки. `stream_offers.kt_share` — то, что
+  сообщил трекер; `share`, `pinned` и `removed` — то, чего вы хотите сейчас. Разница между
+  ними и есть «несохранённые изменения».
+- `offers` — кэш каталога офферов. `GET /admin_api/v1/offers` игнорирует `name` и `limit`
+  и каждый раз возвращает весь список целиком, поэтому автокомплит ищет по локальной копии,
+  а не перекачивает каталог на каждое нажатие клавиши.
+- `sync_logs` — каждый исходящий вызов Keitaro с payload'ом, статусом и длительностью,
+  доступен через `GET /api/campaigns/{id}/logs`. Строки копятся в течение запроса и
+  записываются после того, как его транзакция закоммитилась *или откатилась*, — так
+  упавший вызов всё равно попадает в лог. Лог, который исчезает ровно тогда, когда что-то
+  сломалось, хуже, чем его отсутствие. (Запись во втором соединении вместо этого приводит
+  к взаимной блокировке с открытой транзакцией самого запроса на SQLite — именно так
+  записи и терялись раньше.)
 
-### What I deliberately did not reproduce
+### Что я сознательно не воспроизводил
 
-The brief says the interface is up to me, so I built the behaviour the reference tool has
-rather than its exact chrome. Two things from the video are not here, on purpose:
+В ТЗ сказано, что интерфейс на моё усмотрение, поэтому я воспроизводил поведение
+референсного инструмента, а не его внешний вид один в один. Двух вещей из видео здесь нет,
+и это осознанно:
 
-- **"Show all offers"** — in this UI every stream's offers are always on screen, so there
-  is nothing to expand. The catalogue refresh that button's neighbour implied is here as
-  **Refresh offer catalogue**, which matters more: without it an offer created in Keitaro
-  after first boot would never appear in the pickers.
-- **The "Trends" column** — it was empty in every frame of the reference video and I could
-  not tell what it plotted. Rather than invent a sparkline, I spent the space on the
-  numbers I could verify against `report/build`: clicks, uniques, bots, conversions and
-  revenue, per offer and per stream.
+- **«Show all offers»** — в этом интерфейсе офферы всех потоков всегда на экране,
+  разворачивать нечего. Зато обновление каталога, на которое намекала соседняя кнопка,
+  здесь есть — **Refresh offer catalogue**, и оно важнее: без него оффер, созданный в
+  Keitaro после первого запуска, никогда бы не появился в выпадающих списках.
+- **Колонка «Trends»** — она была пустой на всех кадрах референсного видео, и я не смог
+  понять, что именно она рисует. Вместо того чтобы выдумывать спарклайн, я отдал это место
+  цифрам, которые могу сверить с `report/build`: клики, уники, боты, конверсии и доход —
+  по каждому офферу и по каждому потоку.
 
-Beyond the brief, the editor also lets you **import** an existing Keitaro campaign (part 2
-says "an existing campaign", and something has to put one on the screen), browse the
-tracker's campaigns to find it, and create a campaign group inline.
-
----
-
-## Notes on the Keitaro API
-
-Verified against Keitaro **10.3.16**. A few behaviours differ from what the documentation
-suggests, and the client (`backend/app/keitaro/client.py`) documents each one inline:
-
-- Streams are created with `POST /streams` and `campaign_id` **in the body**;
-  `POST /campaigns/{id}/streams` returns 404 (it exists for `GET` only).
-- `schema: "landings"` still requires `action_type` to be set — `"http"` with an empty
-  payload is what the tracker's own UI sends.
-- `PUT /streams/{id}` with an `offers` array is **declarative**: the array replaces the
-  stream's offer list, so adding, removing and re-weighting is a single call.
-- `GET /groups` requires a `type` query parameter (`campaigns`, `offers`, …).
-- `GET /offers` ignores `name` and `limit`.
-- Errors arrive in two shapes: HTTP 200 with `{"error": "..."}`, and HTTP 422 with
-  `{"field": ["message"]}`. Both are normalised into one error type.
-- An API key may be able to attach an offer it cannot see in `GET /offers`; the catalogue
-  endpoint is permission-scoped while the stream write is not.
-- Campaign names must be unique; a clash comes back as HTTP 422, which this app passes
-  through as a 422 rather than dressing it up as a gateway error.
-- Deleting a campaign **orphans its streams** instead of removing them: they stay readable
-  *and* writable afterwards, so a push would otherwise report success while writing into a
-  campaign that no longer exists. Push and fetch check the campaign itself for this.
+Сверх ТЗ редактор умеет **импортировать** существующую кампанию Keitaro (во второй части
+сказано «существующей кампании», и её надо как-то вывести на экран), искать её в списке
+кампаний трекера и создавать группу кампаний прямо из формы.
 
 ---
 
-## API reference
+## Замечания по API Keitaro
 
-| Method | Path | Purpose |
+Проверено на Keitaro **10.3.16**. Несколько моментов расходятся с тем, что можно
+предположить по документации; в клиенте (`backend/app/keitaro/client.py`) каждый из них
+отмечен комментарием по месту:
+
+- Потоки создаются через `POST /streams`, причём `campaign_id` передаётся **в теле**;
+  `POST /campaigns/{id}/streams` отдаёт 404 (этот путь существует только для `GET`).
+- `schema: "landings"` всё равно требует заполненный `action_type` — собственный интерфейс
+  трекера отправляет `"http"` с пустым payload'ом.
+- `PUT /streams/{id}` с массивом `offers` **декларативен**: массив заменяет список офферов
+  потока целиком, поэтому добавление, удаление и смена весов — это один вызов.
+- `GET /groups` требует query-параметр `type` (`campaigns`, `offers`, …).
+- `GET /offers` игнорирует `name` и `limit`.
+- Ошибки приходят в двух видах: HTTP 200 с `{"error": "..."}` и HTTP 422 с
+  `{"field": ["message"]}`. Оба приводятся к одному типу ошибки.
+- API-ключ может иметь право прицепить оффер, которого не видит в `GET /offers`: каталог
+  ограничен правами, а запись в поток — нет.
+- Названия кампаний должны быть уникальными; конфликт приходит как HTTP 422, и приложение
+  пробрасывает его как 422, а не выдаёт за ошибку шлюза.
+- Удаление кампании **осиротит её потоки**, а не удалит: после этого они остаются
+  доступны и на чтение, *и на запись*. Иначе пуш отрапортовал бы об успехе, записав данные
+  в кампанию, которой больше нет. Поэтому пуш и загрузка дополнительно проверяют саму
+  кампанию.
+
+---
+
+## Справочник по API
+
+| Метод | Путь | Назначение |
 | --- | --- | --- |
-| `GET` | `/healthz` | Liveness plus whether Keitaro credentials are configured |
-| `GET` | `/api/dictionaries` | Campaign groups, traffic sources and domains from Keitaro |
-| `POST` | `/api/dictionaries/groups` | Create a campaign group |
-| `GET` | `/api/countries` | ISO-3166 alpha-2 list for the geo picker |
-| `GET` | `/api/offers?q=&limit=` | Search the cached offer catalogue |
-| `POST` | `/api/offers/sync` | Refresh the cache from Keitaro (the "Refresh offer catalogue" button) |
-| `POST` | `/api/campaigns` | **Part 1** — create a campaign with both flows |
-| `GET` | `/api/campaigns` | Campaigns managed here |
-| `GET` | `/api/campaigns/keitaro?q=` | Browse campaigns that exist in Keitaro |
-| `POST` | `/api/campaigns/import` | Import an existing Keitaro campaign |
-| `DELETE` | `/api/campaigns/{id}` | Stop managing it locally (Keitaro is untouched) |
-| `GET` | `/api/campaigns/{id}/streams?interval=` | **Part 2** — staged streams with stats |
-| `POST` | `/api/campaigns/{id}/fetch` | Re-read streams from Keitaro |
-| `POST` | `/api/campaigns/{id}/streams/{sid}/offers` | Stage an offer addition |
-| `DELETE` | `/api/campaigns/{id}/streams/{sid}/offers/{oid}` | Stage a removal |
-| `POST` | `/api/campaigns/{id}/streams/{sid}/offers/{oid}/restore` | Bring a removed offer back |
-| `PATCH` | `/api/campaigns/{id}/streams/{sid}/offers/{oid}` | Set a share or toggle its pin |
-| `POST` | `/api/campaigns/{id}/push` | Apply staged changes to Keitaro |
-| `POST` | `/api/campaigns/{id}/reset` | Discard staged changes |
-| `GET` | `/api/campaigns/{id}/logs` | Keitaro calls made for this campaign |
+| `GET` | `/healthz` | Живость плюс признак того, настроены ли доступы к Keitaro |
+| `GET` | `/api/dictionaries` | Группы кампаний, источники трафика и домены из Keitaro |
+| `POST` | `/api/dictionaries/groups` | Создать группу кампаний |
+| `GET` | `/api/countries` | Список ISO-3166 alpha-2 для выбора гео |
+| `GET` | `/api/offers?q=&limit=` | Поиск по закэшированному каталогу офферов |
+| `POST` | `/api/offers/sync` | Обновить кэш из Keitaro (кнопка «Refresh offer catalogue») |
+| `POST` | `/api/campaigns` | **Часть 1** — создать кампанию с обоими потоками |
+| `GET` | `/api/campaigns` | Кампании под управлением этого приложения |
+| `GET` | `/api/campaigns/keitaro?q=` | Посмотреть кампании, которые есть в Keitaro |
+| `POST` | `/api/campaigns/import` | Импортировать существующую кампанию Keitaro |
+| `DELETE` | `/api/campaigns/{id}` | Перестать управлять ею локально (в Keitaro ничего не меняется) |
+| `GET` | `/api/campaigns/{id}/streams?interval=` | **Часть 2** — потоки с правками и статистикой |
+| `POST` | `/api/campaigns/{id}/fetch` | Перечитать потоки из Keitaro |
+| `POST` | `/api/campaigns/{id}/streams/{sid}/offers` | Добавить оффер (в буфер) |
+| `DELETE` | `/api/campaigns/{id}/streams/{sid}/offers/{oid}` | Удалить оффер (в буфер) |
+| `POST` | `/api/campaigns/{id}/streams/{sid}/offers/{oid}/restore` | Вернуть удалённый оффер |
+| `PATCH` | `/api/campaigns/{id}/streams/{sid}/offers/{oid}` | Задать долю или переключить закрепление |
+| `POST` | `/api/campaigns/{id}/push` | Применить накопленные правки в Keitaro |
+| `POST` | `/api/campaigns/{id}/reset` | Отменить накопленные правки |
+| `GET` | `/api/campaigns/{id}/logs` | Вызовы Keitaro по этой кампании |
 
-Every editing endpoint returns the full campaign view, so the UI always renders from one
-authoritative payload instead of patching a local copy.
+Каждый редактирующий эндпоинт возвращает полную картину кампании, поэтому интерфейс всегда
+рисуется из одного авторитетного ответа, а не доклеивает изменения к локальной копии.
 
 ---
 
-## Layout
+## Структура проекта
 
 ```
 backend/
   app/
-    keitaro/client.py      async Keitaro admin API client
+    keitaro/client.py      async-клиент admin API Keitaro
     services/
-      campaigns.py         part 1: create / import
-      streams.py           part 2: staging, rebalancing, push, staleness checks
-      shares.py            share arithmetic
-      stats.py             report/build -> per-stream and per-offer numbers, cached briefly
-      offers.py            offer catalogue cache and search
-      logs.py              audit trail
-      geo.py               ISO-3166 country list
-      ids.py               id parsing helpers
-    routers/               HTTP layer
-    audit.py               per-request buffer of audit rows
-    locks.py               per-campaign serialisation of staged edits
-    db.py                  async engine, session, audit flush
-    models.py              SQLAlchemy models
-    schemas.py             request/response models
-  alembic/                 migrations
-  tests/                   pytest suite (Keitaro mocked with respx)
-    test_shares.py           share arithmetic
-    test_campaign_create.py  part 1 payloads, validation, rollback
-    test_stream_editor.py    part 2 staging lifecycle
-    test_resilience.py       staleness, concurrency, bad responses, auditing
-    test_offer_search.py     autocomplete search
-    test_stats_and_logs.py   stats mapping, intervals, caching, audit
+      campaigns.py         часть 1: создание / импорт
+      streams.py           часть 2: буфер правок, пересчёт долей, пуш, проверка устаревания
+      shares.py            арифметика долей
+      stats.py             report/build -> цифры по потокам и офферам, с коротким кэшем
+      offers.py            кэш каталога офферов и поиск по нему
+      logs.py              аудит вызовов
+      geo.py               список стран ISO-3166
+      ids.py               разбор идентификаторов
+    routers/               HTTP-слой
+    audit.py               буфер аудит-записей в пределах запроса
+    locks.py               сериализация правок по кампании
+    db.py                  async-движок, сессия, запись аудита
+    models.py              модели SQLAlchemy
+    schemas.py             модели запросов и ответов
+  alembic/                 миграции
+  tests/                   набор тестов pytest (Keitaro замокан через respx)
+    test_shares.py           арифметика долей
+    test_campaign_create.py  payload'ы части 1, валидация, откат
+    test_stream_editor.py    цикл стейджинга части 2
+    test_resilience.py       устаревание, конкурентность, плохие ответы, аудит
+    test_offer_search.py     поиск для автокомплита
+    test_stats_and_logs.py   маппинг статистики, интервалы, кэш, аудит
 frontend/
   src/
-    pages/CampaignsPage.tsx      creator + import + list
-    pages/StreamEditorPage.tsx   the editor
-    components/OfferPicker.tsx   offer autocomplete
-    api/client.ts                typed API client
+    pages/CampaignsPage.tsx      создаватор + импорт + список
+    pages/StreamEditorPage.tsx   редактор
+    components/OfferPicker.tsx   автокомплит по офферам
+    api/client.ts                типизированный клиент API
 ```
