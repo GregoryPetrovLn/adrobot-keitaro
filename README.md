@@ -12,6 +12,16 @@ It does two things:
 2. **Edits the offers of an existing campaign.** Add and remove offers, re-weight their
    traffic shares, and push the result back to Keitaro.
 
+<p align="center">
+  <img src="docs/creator.png" alt="Campaign creator: name, geo, offer autocomplete, group, source and domain" width="420">
+  <img src="docs/editor.png" alt="Stream editor with staged changes: added, removed and re-weighted offers awaiting a push" width="420">
+</p>
+<p align="center">
+  <sub><b>Left:</b> the creator — name, geo and an offer search over the cached Keitaro catalogue.&nbsp;
+  <b>Right:</b> the editor — one offer added, one staged for removal, one share pinned at 45%,
+  all held locally until <i>Push to KT</i>.</sub>
+</p>
+
 ---
 
 ## Quick start
